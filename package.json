@@ -1,0 +1,14 @@
+{
+  "name": "codex-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "codex-token-usage": "./bin/codex-token-usage.mjs"
+  },
+  "scripts": {
+    "usage": "node ./bin/codex-token-usage.mjs",
+    "web": "node --no-warnings --expose-gc ./bin/codex-usage-server.mjs",
+    "smoke": "node ./bin/codex-token-usage.mjs --group month --limit 3 --json"
+  }
+}
