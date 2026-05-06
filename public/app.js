@@ -312,14 +312,34 @@ function drawBars(ctx, width, height, rows) {
   rows.forEach((row, index) => {
     const y = pad.top + index * rowH;
     const barW = (row.total_tokens / max) * chartW;
+    const barX = pad.left;
+    const barY = y + 4;
+    const barH = Math.max(8, rowH - 9);
+    const label = compactNumber(row.total_tokens);
+    const labelW = ctx.measureText(label).width;
+    const labelY = y + rowH * 0.68;
+    const fitsInside = barW > labelW + 18;
+
     ctx.fillStyle = "#52657a";
     ctx.fillText(truncate(String(row.key), 20), 0, y + rowH * 0.68);
-    ctx.fillStyle = "#dbeafe";
-    ctx.fillRect(pad.left, y + 4, chartW, Math.max(8, rowH - 9));
+    ctx.fillStyle = "#e4f0ff";
+    ctx.fillRect(barX, barY, chartW, barH);
     ctx.fillStyle = "#1E40AF";
-    ctx.fillRect(pad.left, y + 4, barW, Math.max(8, rowH - 9));
-    ctx.fillStyle = "#102a43";
-    ctx.fillText(compactNumber(row.total_tokens), pad.left + Math.min(barW + 8, chartW - 66), y + rowH * 0.68);
+    ctx.fillRect(barX, barY, barW, barH);
+
+    if (fitsInside) {
+      ctx.save();
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#ffffff";
+      ctx.shadowColor = "rgba(16, 42, 67, 0.36)";
+      ctx.shadowBlur = 4;
+      ctx.fillText(label, barX + barW - 10, labelY);
+      ctx.restore();
+    } else {
+      const labelX = clamp(barX + barW + 8, barX + 8, barX + chartW - labelW - 6);
+      ctx.fillStyle = "#102a43";
+      ctx.fillText(label, labelX, labelY);
+    }
   });
 }
 

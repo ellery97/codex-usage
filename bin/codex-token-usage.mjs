@@ -725,6 +725,7 @@ export async function buildUsagePayload(options) {
     dedupeScope: options.dedupeScope,
     totals: result.totals,
     rows: result.rows,
+    rowCount: result.rowCount,
     stats: scanStats,
   };
 
@@ -743,9 +744,9 @@ async function main() {
   if (options.json) {
     console.log(JSON.stringify(payload, null, 2));
   } else if (options.csv) {
-    console.log(emitCsv(result.rows));
+    console.log(emitCsv(payload.rows));
   } else {
-    console.log(textOutput(result, options, scanStats));
+    console.log(textOutput(payload, options, payload.stats));
   }
 }
 
