@@ -52,9 +52,21 @@ const tableBody = document.getElementById("usageTable");
 const dateGroups = new Set(["day", "month"]);
 let sortUserSelected = false;
 const chartSans =
-  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", sans-serif';
+  '"Noto Sans SC", "Fira Sans", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", sans-serif';
 const chartMono =
-  '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace';
+  '"Fira Code", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "SFMono-Regular", Consolas, "Liberation Mono", monospace';
+const chartColors = {
+  ink: "#1F2937",
+  muted: "#64748B",
+  surface: "#FFFFFF",
+  surface2: "#EDF6F3",
+  blue: "#4F67C8",
+  cyan: "#2F8792",
+  amber: "#D88A24",
+  green: "#268466",
+  rose: "#C04D67",
+  grid: "#D8E5E1",
+};
 
 function compactNumber(value) {
   const n = Number(value || 0);
@@ -317,8 +329,8 @@ function drawTrend(ctx, width, height, rows) {
   drawGrid(ctx, pad, chartW, chartH, max);
   drawTrendArea(ctx, totalPoints, baseline, height);
   drawOutputBars(ctx, rows, pad, chartW, chartH);
-  drawSmoothLine(ctx, inputPoints, "#0F8FBF", { width: 2, alpha: 0.58, dash: [6, 6] });
-  drawSmoothLine(ctx, totalPoints, "#1E40AF", { width: 3.2, alpha: 1 });
+  drawSmoothLine(ctx, inputPoints, chartColors.cyan, { width: 2, alpha: 0.74, dash: [6, 6] });
+  drawSmoothLine(ctx, totalPoints, chartColors.blue, { width: 3.2, alpha: 1 });
   drawPeakMarker(ctx, totalPoints, rows, pad, chartW);
   drawHoverGuide(ctx, pad, chartH, totalPoints, rows);
   drawXAxis(ctx, rows, pad, chartW, height);
@@ -331,7 +343,7 @@ function drawBars(ctx, width, height, rows) {
   const max = Math.max(...rows.map((row) => row.total_tokens), 1);
   state.chartPoints = [];
   hideChartTooltip();
-  ctx.font = `12px ${chartMono}`;
+  ctx.font = `700 12px ${chartMono}`;
   rows.forEach((row, index) => {
     const y = pad.top + index * rowH;
     const barW = (row.total_tokens / max) * chartW;
@@ -343,32 +355,30 @@ function drawBars(ctx, width, height, rows) {
     const labelY = y + rowH * 0.68;
     const fitsInside = barW > labelW + 18;
 
-    ctx.fillStyle = "#52657a";
+    ctx.fillStyle = chartColors.ink;
     ctx.fillText(truncate(String(row.key), 20), 0, y + rowH * 0.68);
-    ctx.fillStyle = "#e4f0ff";
+    ctx.fillStyle = chartColors.surface2;
     ctx.fillRect(barX, barY, chartW, barH);
-    ctx.fillStyle = "#1E40AF";
+    ctx.fillStyle = chartColors.blue;
     ctx.fillRect(barX, barY, barW, barH);
 
     if (fitsInside) {
       ctx.save();
       ctx.textAlign = "right";
-      ctx.fillStyle = "#ffffff";
-      ctx.shadowColor = "rgba(16, 42, 67, 0.36)";
-      ctx.shadowBlur = 4;
+      ctx.fillStyle = chartColors.surface;
       ctx.fillText(label, barX + barW - 10, labelY);
       ctx.restore();
     } else {
       const labelX = clamp(barX + barW + 8, barX + 8, barX + chartW - labelW - 6);
-      ctx.fillStyle = "#102a43";
+      ctx.fillStyle = chartColors.ink;
       ctx.fillText(label, labelX, labelY);
     }
   });
 }
 
 function drawGrid(ctx, pad, chartW, chartH, max) {
-  ctx.strokeStyle = "#e6edf5";
-  ctx.fillStyle = "#52657a";
+  ctx.strokeStyle = chartColors.grid;
+  ctx.fillStyle = chartColors.muted;
   ctx.font = `11px ${chartMono}`;
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i += 1) {
@@ -403,9 +413,9 @@ function niceMax(value) {
 function drawTrendArea(ctx, points, baseline, height) {
   if (!points.length) return;
   const gradient = ctx.createLinearGradient(0, 0, 0, height);
-  gradient.addColorStop(0, "rgba(30, 64, 175, 0.20)");
-  gradient.addColorStop(0.58, "rgba(15, 143, 191, 0.07)");
-  gradient.addColorStop(1, "rgba(30, 64, 175, 0)");
+  gradient.addColorStop(0, "rgba(79, 103, 200, 0.20)");
+  gradient.addColorStop(0.55, "rgba(47, 135, 146, 0.08)");
+  gradient.addColorStop(1, "rgba(79, 103, 200, 0)");
   ctx.beginPath();
   traceSmoothPath(ctx, points);
   ctx.lineTo(points.at(-1).x, baseline);
@@ -451,7 +461,8 @@ function drawOutputBars(ctx, rows, pad, chartW, chartH) {
   const bandHeight = Math.min(58, chartH * 0.18);
   const barWidth = Math.max(2, Math.min(10, chartW / Math.max(rows.length, 1) * 0.38));
   ctx.save();
-  ctx.strokeStyle = "rgba(245, 158, 11, 0.28)";
+  ctx.strokeStyle = "rgba(216, 138, 36, 0.25)";
+  ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(pad.left, baseline - bandHeight);
   ctx.lineTo(pad.left + chartW, baseline - bandHeight);
@@ -459,10 +470,10 @@ function drawOutputBars(ctx, rows, pad, chartW, chartH) {
   rows.forEach((row, index) => {
     const x = pad.left + (rows.length === 1 ? chartW / 2 : (index / (rows.length - 1)) * chartW);
     const h = (Number(row.output_tokens || 0) / maxOutput) * bandHeight;
-    ctx.fillStyle = "rgba(245, 158, 11, 0.58)";
+    ctx.fillStyle = "rgba(216, 138, 36, 0.56)";
     ctx.fillRect(x - barWidth / 2, baseline - h, barWidth, h);
   });
-  ctx.fillStyle = "rgba(82, 101, 122, 0.72)";
+  ctx.fillStyle = "rgba(100, 116, 139, 0.76)";
   ctx.font = `11px ${chartSans}`;
   ctx.textAlign = "right";
   ctx.fillText("输出", pad.left - 12, baseline - bandHeight + 4);
@@ -471,7 +482,7 @@ function drawOutputBars(ctx, rows, pad, chartW, chartH) {
 
 function drawXAxis(ctx, rows, pad, chartW, height) {
   const tickIndexes = pickTickIndexes(rows.length, chartW);
-  ctx.fillStyle = "#52657a";
+  ctx.fillStyle = chartColors.muted;
   ctx.font = `11px ${chartMono}`;
   ctx.textBaseline = "alphabetic";
   tickIndexes.forEach((index) => {
@@ -508,20 +519,20 @@ function drawPeakMarker(ctx, points, rows, pad, chartW) {
   const peak = points[peakIndex];
   const label = `峰值 ${compactNumber(rows[peakIndex].total_tokens)}`;
   ctx.save();
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "#1E40AF";
+  ctx.fillStyle = chartColors.surface;
+  ctx.strokeStyle = chartColors.blue;
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.arc(peak.x, peak.y, 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
 
-  ctx.font = `12px ${chartSans}`;
+  ctx.font = `700 12px ${chartSans}`;
   const labelW = Math.ceil(ctx.measureText(label).width) + 16;
   const boxX = clamp(peak.x + 10, pad.left, pad.left + chartW - labelW);
   const boxY = Math.max(pad.top + 2, peak.y - 32);
-  roundedRect(ctx, boxX, boxY, labelW, 24, 6);
-  ctx.fillStyle = "rgba(16, 42, 67, 0.92)";
+  roundedRect(ctx, boxX, boxY, labelW, 24, 8);
+  ctx.fillStyle = "rgba(31, 41, 55, 0.92)";
   ctx.fill();
   ctx.fillStyle = "#ffffff";
   ctx.fillText(label, boxX + 8, boxY + 16);
@@ -532,22 +543,23 @@ function drawHoverGuide(ctx, pad, chartH, points, rows) {
   if (state.hoverIndex == null || !points[state.hoverIndex]) return;
   const point = points[state.hoverIndex];
   ctx.save();
-  ctx.strokeStyle = "rgba(16, 42, 67, 0.24)";
+  ctx.strokeStyle = "rgba(31, 41, 55, 0.24)";
   ctx.setLineDash([4, 5]);
+  ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(point.x, pad.top);
   ctx.lineTo(point.x, pad.top + chartH);
   ctx.stroke();
 
   ctx.setLineDash([]);
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "#1E40AF";
+  ctx.fillStyle = chartColors.surface;
+  ctx.strokeStyle = chartColors.blue;
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "#1E40AF";
+  ctx.fillStyle = chartColors.blue;
   ctx.beginPath();
   ctx.arc(point.x, point.y, 2.5, 0, Math.PI * 2);
   ctx.fill();
@@ -575,10 +587,10 @@ function renderMixChart(totals) {
   const centerY = height / 2;
   const radius = Math.min(width, height) * 0.35;
   const values = [
-    { value: totals.uncached_input_tokens || 0, color: "#0F8FBF" },
-    { value: totals.cached_input_tokens || 0, color: "#0F8A5F" },
-    { value: totals.output_tokens || 0, color: "#F59E0B" },
-    { value: totals.reasoning_output_tokens || 0, color: "#D23F57" },
+    { value: totals.uncached_input_tokens || 0, color: chartColors.cyan },
+    { value: totals.cached_input_tokens || 0, color: chartColors.green },
+    { value: totals.output_tokens || 0, color: chartColors.amber },
+    { value: totals.reasoning_output_tokens || 0, color: chartColors.rose },
   ];
   const sum = values.reduce((acc, item) => acc + item.value, 0) || 1;
   let angle = -Math.PI / 2;
@@ -594,20 +606,20 @@ function renderMixChart(totals) {
   });
   ctx.beginPath();
   ctx.arc(centerX, centerY, radius * 0.58, 0, Math.PI * 2);
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = chartColors.surface;
   ctx.fill();
   ctx.textAlign = "center";
-  ctx.fillStyle = "#102a43";
+  ctx.fillStyle = chartColors.ink;
   ctx.font = `700 22px ${chartMono}`;
   ctx.fillText(percent(totals.cache_hit_ratio), centerX, centerY - 2);
-  ctx.fillStyle = "#52657a";
+  ctx.fillStyle = chartColors.muted;
   ctx.font = `12px ${chartSans}`;
   ctx.fillText("缓存命中", centerX, centerY + 18);
   ctx.textAlign = "left";
 }
 
 function drawEmpty(ctx, width, height) {
-  ctx.fillStyle = "#52657a";
+  ctx.fillStyle = chartColors.muted;
   ctx.font = `14px ${chartSans}`;
   ctx.textAlign = "center";
   ctx.fillText("暂无数据", width / 2, height / 2);
