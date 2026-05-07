@@ -23,6 +23,7 @@ const els = {
   usageChart: document.getElementById("usageChart"),
   mixChart: document.getElementById("mixChart"),
   chartTooltip: document.getElementById("chartTooltip"),
+  mainLegend: document.querySelector(".legend"),
 };
 
 const text = {
@@ -49,10 +50,11 @@ const text = {
 
 const tableBody = document.getElementById("usageTable");
 const dateGroups = new Set(["day", "month"]);
+let sortUserSelected = false;
 const chartSans =
-  '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "Fira Sans", sans-serif';
+  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", sans-serif';
 const chartMono =
-  '"Fira Code", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei", "SFMono-Regular", Consolas, "Liberation Mono", monospace';
+  '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace';
 
 function compactNumber(value) {
   const n = Number(value || 0);
@@ -93,9 +95,15 @@ function showError(message) {
 
 function syncControls() {
   els.controlGrid.classList.toggle("show-custom", els.rangeSelect.value === "custom");
-  const group = els.groupSelect.value;
-  if (els.directionSelect.value === "auto") {
-    els.sortSelect.value = dateGroups.has(group) ? "key" : "total";
+}
+
+function defaultSortForGroup(group) {
+  return dateGroups.has(group) ? "key" : "total";
+}
+
+function syncSortForGroup({ force = false } = {}) {
+  if (force || !sortUserSelected) {
+    els.sortSelect.value = defaultSortForGroup(els.groupSelect.value);
   }
 }
 
@@ -111,7 +119,7 @@ function buildQuery() {
   params.set("dedupeScope", els.dedupeSelect.value);
 
   if (direction === "asc") params.set("asc", "1");
-  if (direction === "desc" || shouldAutoPreferLatest(group, sort, direction)) params.set("desc", "1");
+  if (direction === "desc" || shouldAutoPreferDesc(group, sort, direction)) params.set("desc", "1");
   if (els.rangeSelect.value === "custom") {
     if (els.fromInput.value) params.set("from", els.fromInput.value);
     if (els.toInput.value) params.set("to", els.toInput.value);
@@ -119,8 +127,10 @@ function buildQuery() {
   return params;
 }
 
-function shouldAutoPreferLatest(group, sort, direction) {
-  return direction === "auto" && dateGroups.has(group) && sort === "key";
+function shouldAutoPreferDesc(group, sort, direction) {
+  if (direction !== "auto") return false;
+  if (sort === "key") return dateGroups.has(group);
+  return true;
 }
 
 async function loadData() {
@@ -175,9 +185,22 @@ function render() {
   text.mainChartMeta.textContent = `${rowScope} · ${dedupeName(data.dedupeScope)}去重`;
   text.tableMeta.textContent = `${groupLabel} · ${fullNumber(data.rowCount || data.rows.length)} 个分组`;
 
+  renderMainLegend(data.group);
   renderMainChart(data.rows || [], data.group);
   renderMixChart(totals);
   renderTable();
+}
+
+function renderMainLegend(group) {
+  if (!els.mainLegend) return;
+  const items = dateGroups.has(group)
+    ? [
+        ["legend-total", "总量"],
+        ["legend-input", "输入"],
+        ["legend-output", "输出"],
+      ]
+    : [["legend-total", "总量"]];
+  els.mainLegend.innerHTML = items.map(([className, label]) => `<span><i class="${className}"></i>${label}</span>`).join("");
 }
 
 function formatRange(range) {
@@ -644,9 +667,15 @@ function hideChartTooltip() {
 
 ["change", "input"].forEach((eventName) => {
   els.rangeSelect.addEventListener(eventName, syncControls);
-  els.groupSelect.addEventListener(eventName, syncControls);
+  els.groupSelect.addEventListener(eventName, () => {
+    syncControls();
+    syncSortForGroup();
+  });
 });
 
+els.sortSelect.addEventListener("change", () => {
+  sortUserSelected = true;
+});
 els.refreshButton.addEventListener("click", loadData);
 els.tableSearch.addEventListener("input", renderTable);
 els.usageChart.addEventListener("mousemove", handleChartMove);
@@ -660,4 +689,11 @@ window.addEventListener("resize", () => {
 });
 
 syncControls();
+syncSortForGroup({ force: true });
 loadData();
+
+if (document.fonts?.ready) {
+  document.fonts.ready.then(() => {
+    if (state.data) render();
+  });
+}
