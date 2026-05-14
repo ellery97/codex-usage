@@ -260,7 +260,7 @@ button:focus-visible {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -338,6 +338,10 @@ button:focus-visible {
 
 .accent-green {
   --accent: var(--green);
+}
+
+.accent-rose {
+  --accent: var(--rose);
 }
 
 .analytics-grid,
@@ -547,7 +551,7 @@ canvas {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 960px;
+  min-width: 1080px;
 }
 
 th,

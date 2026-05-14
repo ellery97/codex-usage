@@ -61,6 +61,7 @@
             <option value="reasoning">推理输出</option>
             <option value="requests">请求数</option>
             <option value="sessions">会话数</option>
+            <option value="cost">预估金额</option>
           </select>
         </label>
         <label>
@@ -119,6 +120,11 @@
           <span>缓存命中率</span>
           <strong id="cacheRatio">--</strong>
           <small id="uncachedInput">-- 未缓存输入</small>
+        </article>
+        <article class="metric-card accent-rose">
+          <span>预估金额</span>
+          <strong id="estimatedCost">--</strong>
+          <small id="costSub">按官方价估算</small>
         </article>
       </section>
 
@@ -200,6 +206,7 @@
                   <th>缓存</th>
                   <th>输出</th>
                   <th>推理</th>
+                  <th>金额</th>
                   <th>缓存率</th>
                 </tr>
               </thead>

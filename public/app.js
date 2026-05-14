@@ -38,6 +38,8 @@ const text = {
   reasoningOutput: document.getElementById("reasoningOutput"),
   cacheRatio: document.getElementById("cacheRatio"),
   uncachedInput: document.getElementById("uncachedInput"),
+  estimatedCost: document.getElementById("estimatedCost"),
+  costSub: document.getElementById("costSub"),
   mainChartTitle: document.getElementById("mainChartTitle"),
   mainChartMeta: document.getElementById("mainChartMeta"),
   scanMeta: document.getElementById("scanMeta"),
@@ -82,6 +84,18 @@ function fullNumber(value) {
 
 function percent(value) {
   return `${(Number(value || 0) * 100).toFixed(1)}%`;
+}
+
+function money(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return "$0.00";
+  if (Math.abs(n) >= 1000) {
+    return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  if (Math.abs(n) >= 1) {
+    return `$${n.toFixed(2)}`;
+  }
+  return `$${n.toFixed(4)}`;
 }
 
 function durationMs(value) {
@@ -184,6 +198,11 @@ function render() {
   text.reasoningOutput.textContent = `${compactNumber(totals.reasoning_output_tokens)} 推理输出`;
   text.cacheRatio.textContent = percent(totals.cache_hit_ratio);
   text.uncachedInput.textContent = `${compactNumber(totals.uncached_input_tokens)} 未缓存输入`;
+  text.estimatedCost.textContent = money(totals.estimated_cost_usd);
+  text.costSub.textContent =
+    Number(totals.unpriced_total_tokens || 0) > 0
+      ? `${compactNumber(totals.unpriced_total_tokens)} Token 未计价`
+      : "官方 API 标准价估算";
 
   text.sessionCount.textContent = fullNumber(totals.sessions);
   text.requestCount.textContent = fullNumber(totals.requests);
@@ -197,13 +216,13 @@ function render() {
   text.mainChartMeta.textContent = `${rowScope} · ${dedupeName(data.dedupeScope)}去重`;
   text.tableMeta.textContent = `${groupLabel} · ${fullNumber(data.rowCount || data.rows.length)} 个分组`;
 
-  renderMainLegend(data.group);
-  renderMainChart(data.rows || [], data.group);
+  renderMainLegend(data.group, data.sort);
+  renderMainChart(data.rows || [], data.group, data.sort);
   renderMixChart(totals);
   renderTable();
 }
 
-function renderMainLegend(group) {
+function renderMainLegend(group, sort) {
   if (!els.mainLegend) return;
   const items = dateGroups.has(group)
     ? [
@@ -211,7 +230,7 @@ function renderMainLegend(group) {
         ["legend-input", "输入"],
         ["legend-output", "输出"],
       ]
-    : [["legend-total", "总量"]];
+    : [[sort === "cost" ? "swatch reasoning" : "legend-total", sort === "cost" ? "金额" : "总量"]];
   els.mainLegend.innerHTML = items.map(([className, label]) => `<span><i class="${className}"></i>${label}</span>`).join("");
 }
 
@@ -252,7 +271,7 @@ function renderTable() {
   const needle = els.tableSearch.value.trim().toLowerCase();
   const rows = state.rows.filter((row) => !needle || String(row.key).toLowerCase().includes(needle));
   if (!rows.length) {
-    tableBody.innerHTML = '<tr><td colspan="9" class="empty-cell">暂无数据</td></tr>';
+    tableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">暂无数据</td></tr>';
     return;
   }
   tableBody.innerHTML = rows
@@ -267,6 +286,7 @@ function renderTable() {
           <td>${fullNumber(row.cached_input_tokens)}</td>
           <td>${fullNumber(row.output_tokens)}</td>
           <td>${fullNumber(row.reasoning_output_tokens)}</td>
+          <td title="${escapeHtml(costTitle(row))}">${money(row.estimated_cost_usd)}</td>
           <td>${percent(row.cache_hit_ratio)}</td>
         </tr>`,
     )
@@ -279,6 +299,14 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function costTitle(row) {
+  const parts = [`预估金额 ${money(row.estimated_cost_usd)}`];
+  if (Number(row.unpriced_total_tokens || 0) > 0) {
+    parts.push(`${fullNumber(row.unpriced_total_tokens)} Token 未计价`);
+  }
+  return parts.join(" · ");
 }
 
 function setupCanvas(canvas) {
@@ -295,7 +323,7 @@ function setupCanvas(canvas) {
   return { ctx, width: cssWidth, height: cssHeight };
 }
 
-function renderMainChart(rows, group) {
+function renderMainChart(rows, group, sort = "total") {
   const { ctx, width, height } = setupCanvas(els.usageChart);
   ctx.clearRect(0, 0, width, height);
   if (!rows.length) {
@@ -308,7 +336,7 @@ function renderMainChart(rows, group) {
     drawTrend(ctx, width, height, [...rows].sort(compareDateRowsAsc));
   } else {
     state.hoverIndex = null;
-    drawBars(ctx, width, height, rows.slice(0, 18));
+    drawBars(ctx, width, height, rows.slice(0, 18), sort === "cost" ? "estimated_cost_usd" : "total_tokens");
   }
 }
 
@@ -336,21 +364,23 @@ function drawTrend(ctx, width, height, rows) {
   drawXAxis(ctx, rows, pad, chartW, height);
 }
 
-function drawBars(ctx, width, height, rows) {
+function drawBars(ctx, width, height, rows, metric = "total_tokens") {
   const pad = { top: 8, right: 22, bottom: 16, left: 150 };
   const chartW = width - pad.left - pad.right;
   const rowH = Math.max(16, Math.min(28, (height - pad.top - pad.bottom) / Math.max(rows.length, 1)));
-  const max = Math.max(...rows.map((row) => row.total_tokens), 1);
+  const isCost = metric === "estimated_cost_usd";
+  const max = Math.max(...rows.map((row) => Number(row[metric] || 0)), 1);
   state.chartPoints = [];
   hideChartTooltip();
   ctx.font = `700 12px ${chartMono}`;
   rows.forEach((row, index) => {
+    const value = Number(row[metric] || 0);
     const y = pad.top + index * rowH;
-    const barW = (row.total_tokens / max) * chartW;
+    const barW = (value / max) * chartW;
     const barX = pad.left;
     const barY = y + 4;
     const barH = Math.max(8, rowH - 9);
-    const label = compactNumber(row.total_tokens);
+    const label = isCost ? money(value) : compactNumber(value);
     const labelW = ctx.measureText(label).width;
     const labelY = y + rowH * 0.68;
     const fitsInside = barW > labelW + 18;
@@ -359,7 +389,7 @@ function drawBars(ctx, width, height, rows) {
     ctx.fillText(truncate(String(row.key), 20), 0, y + rowH * 0.68);
     ctx.fillStyle = chartColors.surface2;
     ctx.fillRect(barX, barY, chartW, barH);
-    ctx.fillStyle = chartColors.blue;
+    ctx.fillStyle = isCost ? chartColors.rose : chartColors.blue;
     ctx.fillRect(barX, barY, barW, barH);
 
     if (fitsInside) {
@@ -653,7 +683,7 @@ function handleChartMove(event) {
 
   if (state.hoverIndex !== nearest.index) {
     state.hoverIndex = nearest.index;
-    renderMainChart(state.data.rows || [], state.data.group);
+    renderMainChart(state.data.rows || [], state.data.group, state.data.sort);
   }
   showChartTooltip(nearest, rect);
 }
@@ -666,6 +696,7 @@ function showChartTooltip(point, rect) {
     <span>输入 <em>${fullNumber(row.input_tokens)}</em></span>
     <span>输出 <em>${fullNumber(row.output_tokens)}</em></span>
     <span>推理 <em>${fullNumber(row.reasoning_output_tokens)}</em></span>
+    <span>金额 <em>${money(row.estimated_cost_usd)}</em></span>
     <span>缓存率 <em>${percent(row.cache_hit_ratio)}</em></span>
   `;
   els.chartTooltip.style.left = `${clamp(point.x, 104, rect.width - 104)}px`;
@@ -694,7 +725,7 @@ els.usageChart.addEventListener("mousemove", handleChartMove);
 els.usageChart.addEventListener("mouseleave", () => {
   state.hoverIndex = null;
   hideChartTooltip();
-  if (state.data) renderMainChart(state.data.rows || [], state.data.group);
+  if (state.data) renderMainChart(state.data.rows || [], state.data.group, state.data.sort);
 });
 window.addEventListener("resize", () => {
   if (state.data) render();

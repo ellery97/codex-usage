@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { costStatsForUsage, pricingMetadata } from "./openai-pricing.mjs";
 
 const USAGE_FIELDS = [
   "input_tokens",
@@ -17,7 +18,7 @@ const USAGE_FIELDS = [
 
 const DATE_GROUPS = new Set(["day", "month"]);
 const GROUPS = new Set(["none", "day", "month", "model", "cwd", "session"]);
-const SORTS = new Set(["key", "total", "input", "output", "cached", "reasoning", "requests", "sessions"]);
+const SORTS = new Set(["key", "total", "input", "output", "cached", "reasoning", "requests", "sessions", "cost"]);
 const DEDUPE_SCOPES = new Set(["file", "global"]);
 const DATE_FORMATTERS = new Map();
 const TIME_FORMATTERS = new Map();
@@ -50,6 +51,25 @@ function addUsage(target, source) {
   for (const field of USAGE_FIELDS) {
     target[field] += source[field] || 0;
   }
+  return target;
+}
+
+function costZero() {
+  return {
+    estimated_cost_usd: 0,
+    priced_requests: 0,
+    unpriced_requests: 0,
+    priced_total_tokens: 0,
+    unpriced_total_tokens: 0,
+  };
+}
+
+function addCostStats(target, source) {
+  target.estimated_cost_usd += Number(source.estimated_cost_usd || 0);
+  target.priced_requests += Number(source.priced_requests || 0);
+  target.unpriced_requests += Number(source.unpriced_requests || 0);
+  target.priced_total_tokens += Number(source.priced_total_tokens || 0);
+  target.unpriced_total_tokens += Number(source.unpriced_total_tokens || 0);
   return target;
 }
 
@@ -222,7 +242,7 @@ Options:
   --last DURATION         Include recent events, e.g. 24h, 7d, 4w
   --today                 Include events since local midnight
   --group VALUE           none, day, month, model, cwd, session. Default: month
-  --sort VALUE            key, total, input, output, cached, reasoning, requests, sessions
+  --sort VALUE            key, total, input, output, cached, reasoning, requests, sessions, cost
   --asc / --desc          Sort direction. Date groups default ascending; others descending
   --limit N               Limit grouped rows. 0 means no limit
   --dedupe-scope VALUE    file or global. Default: global
@@ -235,6 +255,7 @@ Notes:
   - The tool reads local Codex JSONL session files and aggregates event_msg.token_count.
   - Duplicate token_count lines with the same cumulative total are skipped.
   - Global dedupe also skips copied historical token_count events embedded in later rollouts.
+  - estimated_cost_usd uses a local OpenAI API pricing snapshot and is only an estimate.
   - cached_input_tokens and reasoning_output_tokens are subsets; do not add them to total_tokens again.`;
 }
 
@@ -463,13 +484,16 @@ export function aggregate(events, options) {
     sessions: new Set(),
     requests: 0,
     usage: usageZero(),
+    cost: costZero(),
   };
   const groups = new Map();
 
   for (const event of events) {
+    const eventCost = costStatsForUsage(event.model, event.usage);
     totals.sessions.add(event.sessionId);
     totals.requests += 1;
     addUsage(totals.usage, event.usage);
+    addCostStats(totals.cost, eventCost);
 
     if (options.group === "none") {
       continue;
@@ -483,12 +507,14 @@ export function aggregate(events, options) {
         sessions: new Set(),
         requests: 0,
         usage: usageZero(),
+        cost: costZero(),
       };
       groups.set(key, row);
     }
     row.sessions.add(event.sessionId);
     row.requests += 1;
     addUsage(row.usage, event.usage);
+    addCostStats(row.cost, eventCost);
   }
 
   const rows = Array.from(groups.values()).map((row) => ({
@@ -496,6 +522,7 @@ export function aggregate(events, options) {
     sessions: row.sessions.size,
     requests: row.requests,
     ...withDerivedUsage(row.usage),
+    ...row.cost,
   }));
 
   rows.sort((a, b) => compareRows(a, b, options));
@@ -506,6 +533,7 @@ export function aggregate(events, options) {
       sessions: totals.sessions.size,
       requests: totals.requests,
       ...withDerivedUsage(totals.usage),
+      ...totals.cost,
     },
     rows: limitedRows,
     rowCount: rows.length,
@@ -528,6 +556,7 @@ function sortValue(row, sort) {
   if (sort === "reasoning") return row.reasoning_output_tokens;
   if (sort === "requests") return row.requests;
   if (sort === "sessions") return row.sessions;
+  if (sort === "cost") return row.estimated_cost_usd;
   return row.key;
 }
 
@@ -554,6 +583,14 @@ function fmtPct(value) {
   return `${(100 * (value || 0)).toFixed(1)}%`;
 }
 
+function fmtUsd(value) {
+  const n = Number(value || 0);
+  if (Math.abs(n) >= 1) {
+    return `$${n.toFixed(2)}`;
+  }
+  return `$${n.toFixed(4)}`;
+}
+
 function table(rows) {
   const headers = [
     "group",
@@ -565,6 +602,7 @@ function table(rows) {
     "output",
     "reasoning",
     "total",
+    "cost",
     "cache%",
   ];
   const body = rows.map((row) => [
@@ -577,6 +615,7 @@ function table(rows) {
     fmtNum(row.output_tokens),
     fmtNum(row.reasoning_output_tokens),
     fmtNum(row.total_tokens),
+    fmtUsd(row.estimated_cost_usd),
     fmtPct(row.cache_hit_ratio),
   ]);
   const widths = headers.map((header, idx) =>
@@ -611,6 +650,11 @@ function emitCsv(rows) {
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
+    "estimated_cost_usd",
+    "priced_requests",
+    "unpriced_requests",
+    "priced_total_tokens",
+    "unpriced_total_tokens",
     "cache_hit_ratio",
   ];
   const lines = [headers.join(",")];
@@ -626,6 +670,11 @@ function emitCsv(rows) {
         row.output_tokens,
         row.reasoning_output_tokens,
         row.total_tokens,
+        row.estimated_cost_usd,
+        row.priced_requests,
+        row.unpriced_requests,
+        row.priced_total_tokens,
+        row.unpriced_total_tokens,
         row.cache_hit_ratio,
       ]
         .map(csvEscape)
@@ -666,6 +715,10 @@ function textOutput(result, options, scanStats) {
   lines.push(`  output_tokens: ${fmtNum(result.totals.output_tokens)}`);
   lines.push(`  reasoning_output_tokens: ${fmtNum(result.totals.reasoning_output_tokens)}`);
   lines.push(`  total_tokens: ${fmtNum(result.totals.total_tokens)}`);
+  lines.push(`  estimated_cost_usd: ${fmtUsd(result.totals.estimated_cost_usd)}`);
+  if (result.totals.unpriced_total_tokens > 0) {
+    lines.push(`  unpriced_total_tokens: ${fmtNum(result.totals.unpriced_total_tokens)}`);
+  }
 
   if (options.group !== "none") {
     lines.push("");
@@ -727,6 +780,7 @@ export async function buildUsagePayload(options) {
     rows: result.rows,
     rowCount: result.rowCount,
     stats: scanStats,
+    pricing: pricingMetadata(),
   };
 
   return payload;

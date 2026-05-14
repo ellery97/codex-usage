@@ -1,7 +1,7 @@
 # Codex Token 用量统计
 
 一个本地 Codex token 用量统计工具。它读取本机 Codex 会话目录中的 JSONL 日志，
-统计输入、缓存输入、输出、推理输出、总 token、请求数、会话数和缓存命中率，并提供
+统计输入、缓存输入、输出、推理输出、总 token、请求数、会话数、缓存命中率和预估金额，并提供
 命令行输出和本地 Web 仪表盘两种使用方式。
 
 默认数据来源是：
@@ -20,6 +20,7 @@ token 用量、模型、工作目录和会话信息，不输出会话正文。
 - 支持文本、JSON、CSV 三种命令行输出。
 - 提供本地 Web 页面，展示汇总卡片、Token 用量趋势、Token 构成、扫描状态和明细表。
 - Web 服务使用 SQLite 持久索引，首次扫描后复用索引，只增量重扫新增或变更过的会话文件。
+- 按 OpenAI API 官方标准 token 价格估算美元消耗，并支持按金额排序。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
 
 ## 环境要求
@@ -104,6 +105,9 @@ node ./bin/codex-token-usage.mjs --last 7d --group day --json
 # 找出 token 消耗最高的 20 个工作目录
 node ./bin/codex-token-usage.mjs --group cwd --sort total --desc --limit 20
 
+# 按官方 API 标准价估算模型消耗金额
+node ./bin/codex-token-usage.mjs --group model --sort cost --desc --limit 20
+
 # 输出 CSV，方便导入表格
 node ./bin/codex-token-usage.mjs --group month --csv > codex_usage.csv
 
@@ -122,7 +126,7 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | `--last DURATION` | 最近一段时间，例如 `24h`、`7d`、`4w` |
 | `--today` | 从本地当天 0 点开始统计 |
 | `--group VALUE` | 分组方式：`none`、`day`、`month`、`model`、`cwd`、`session` |
-| `--sort VALUE` | 排序字段：`key`、`total`、`input`、`output`、`cached`、`reasoning`、`requests`、`sessions` |
+| `--sort VALUE` | 排序字段：`key`、`total`、`input`、`output`、`cached`、`reasoning`、`requests`、`sessions`、`cost` |
 | `--asc`, `--desc` | 排序方向；日期分组默认升序，其它分组默认降序 |
 | `--limit N` | 限制输出行数；`0` 表示不限制 |
 | `--dedupe-scope VALUE` | 去重范围：`global` 或 `file`，默认 `global` |
@@ -161,10 +165,51 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | `reasoning_output_tokens` | 输出 token 中用于推理的部分 |
 | `total_tokens` | Codex 记录的总 token，通常等于 `input_tokens + output_tokens` |
 | `cache_hit_ratio` | 缓存命中率，等于 `cached_input_tokens / input_tokens` |
+| `estimated_cost_usd` | 按本地价格快照估算的美元金额 |
+| `priced_requests` | 已匹配到价格表的请求数 |
+| `unpriced_requests` | 未匹配到价格表的请求数 |
+| `unpriced_total_tokens` | 未计入金额的 token 数 |
 | `requests` | token 事件数量，可近似理解为记录到 token 用量的请求数 |
 | `sessions` | 参与统计的 Codex 会话数 |
 
 `cached_input_tokens` 和 `reasoning_output_tokens` 是子集字段，不要再叠加到 `total_tokens` 上。
+
+## 金额估算口径
+
+金额估算使用 `bin/openai-pricing.mjs` 中的本地价格快照，当前快照时间为 `2026-05-14`，
+口径是 OpenAI API 标准 text token 价格，不包含 Batch 折扣、Flex/Priority 差异、区域加价、
+订阅权益、税费或账户级优惠。
+
+估算公式：
+
+```text
+estimated_cost_usd =
+  (未缓存输入 token * input 单价
+   + 缓存输入 token * cached input 单价
+   + 输出 token * output 单价) / 1,000,000
+```
+
+`input_tokens` 已包含缓存输入，因此会先扣除 `cached_input_tokens` 再按普通输入计价。
+`output_tokens` 已包含 `reasoning_output_tokens`，所以推理输出不会重复计价。
+
+如果某个模型没有出现在价格快照中，对应请求会计入 `unpriced_requests` 和
+`unpriced_total_tokens`，金额按 `0` 处理，前端会提示有未计价 token。
+
+价格来源主要参考：
+
+- <https://openai.com/api/pricing/>
+- <https://developers.openai.com/api/docs/models/gpt-5.5>
+- <https://developers.openai.com/api/docs/models/gpt-5.4>
+- <https://developers.openai.com/api/docs/models/gpt-5.4-mini>
+- <https://developers.openai.com/api/docs/models/gpt-5.3-codex>
+- <https://developers.openai.com/api/docs/models/gpt-5.2-codex>
+- <https://developers.openai.com/api/docs/models/gpt-5-codex>
+- <https://developers.openai.com/api/docs/models/gpt-5.1>
+- <https://developers.openai.com/api/docs/models/gpt-5.1-codex>
+- <https://developers.openai.com/api/docs/models/gpt-5.1-codex-max>
+- <https://developers.openai.com/api/docs/models/gpt-5.1-codex-mini>
+- <https://developers.openai.com/api/docs/models/gpt-4o>
+- <https://developers.openai.com/api/docs/models/gpt-4o-mini>
 
 ## Web 环境变量
 
@@ -218,7 +263,8 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 .
 ├── bin/
 │   ├── codex-token-usage.mjs      # CLI 扫描与聚合逻辑
-│   └── codex-usage-server.mjs     # 本地 Web 服务与 SQLite 索引
+│   ├── codex-usage-server.mjs     # 本地 Web 服务与 SQLite 索引
+│   └── openai-pricing.mjs         # OpenAI API token 价格快照和金额估算
 ├── public/
 │   ├── index.html                 # 仪表盘页面
 │   ├── app.js                     # 前端交互、图表和表格渲染
@@ -257,6 +303,7 @@ SQL 聚合，所以切换筛选条件和刷新通常更快。
 ```bash
 node --check bin/codex-token-usage.mjs
 node --check bin/codex-usage-server.mjs
+node --check bin/openai-pricing.mjs
 node --check public/app.js
 ```
 
