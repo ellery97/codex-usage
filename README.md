@@ -8,6 +8,7 @@
 
 ```text
 ~/.codex/sessions/**/*.jsonl
+/mnt/c/Users/<WindowsUsername>/.codex/sessions/**/*.jsonl  # 目录存在时自动加入
 ```
 
 工具只读取 `event_msg.token_count`、`turn_context` 和 `session_meta` 相关记录，用于还原
@@ -21,13 +22,14 @@ token 用量、模型、工作目录和会话信息，不输出会话正文。
 - 提供本地 Web 页面，展示汇总卡片、Token 用量趋势、Token 构成、扫描状态和明细表。
 - Web 服务使用 SQLite 持久索引，首次扫描后复用索引，只增量重扫新增或变更过的会话文件。
 - 按 OpenAI API 官方标准 token 价格估算美元消耗，并支持按金额排序。
+- 在 WSL 环境下默认自动合并 Windows 侧 Codex 会话目录 `/mnt/c/Users/<WindowsUsername>/.codex/sessions`。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
 
 ## 环境要求
 
 - Node.js，需要支持内置 `node:sqlite` 的版本。当前项目已在 `v22.22.0` 下验证。
 - 不需要安装第三方 npm 依赖，项目只使用 Node.js 标准库。
-- 本机需要存在 Codex 会话日志目录，默认是 `~/.codex/sessions`。
+- 本机需要存在 Codex 会话日志目录，默认是 `~/.codex/sessions`；如果 Windows 侧目录存在，也会自动加入。
 
 如果启动 Web 服务时报 `No such built-in module: node:sqlite`，请升级 Node.js。
 
@@ -79,6 +81,7 @@ npm run web
 
 首次打开页面时会完整扫描历史 JSONL 文件并写入索引；之后刷新或切换范围、分组、排序时，
 服务会根据文件 `size` 和 `mtime` 判断哪些文件发生变化，只重扫变化文件。
+页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换。
 
 `.codex-usage/` 已写入 `.gitignore`，不会提交到 Git。
 
@@ -108,6 +111,12 @@ node ./bin/codex-token-usage.mjs --group cwd --sort total --desc --limit 20
 # 按官方 API 标准价估算模型消耗金额
 node ./bin/codex-token-usage.mjs --group model --sort cost --desc --limit 20
 
+# 只统计 Windows 侧 Codex 会话
+node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions
+
+# 显式合并多个会话目录
+node ./bin/codex-token-usage.mjs --sessions ~/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions
+
 # 输出 CSV，方便导入表格
 node ./bin/codex-token-usage.mjs --group month --csv > codex_usage.csv
 
@@ -120,7 +129,7 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | 参数 | 说明 |
 | --- | --- |
 | `--codex-home PATH` | Codex home 目录，默认 `$CODEX_HOME` 或 `~/.codex` |
-| `--sessions PATH` | 会话目录，默认 `<codex-home>/sessions` |
+| `--sessions PATH` | 会话目录，可重复传入；显式传入后不会自动追加默认目录 |
 | `--from`, `--since DATE` | 只包含该时间点之后的 token 事件 |
 | `--to`, `--until DATE` | 只包含该时间点之前的 token 事件；传 `YYYY-MM-DD` 时包含整天 |
 | `--last DURATION` | 最近一段时间，例如 `24h`、`7d`、`4w` |
@@ -223,11 +232,18 @@ estimated_cost_usd =
 | `CODEX_USAGE_SCAN_CONCURRENCY` | `8` | 重扫会话文件的并发数，范围会限制在 `1` 到 `32` |
 | `CODEX_USAGE_GC` | 非 `0` | 设为 `0` 可关闭 Web 服务中的显式 GC |
 | `CODEX_HOME` | `~/.codex` | Codex home 目录，影响默认 sessions 路径 |
+| `CODEX_USAGE_SESSIONS` | 空 | 用 `:` 分隔的多个会话目录；设置后覆盖默认自动发现 |
 
 示例：
 
 ```bash
 CODEX_USAGE_PORT=8788 CODEX_USAGE_DB=/tmp/codex-usage.sqlite npm run web
+```
+
+显式指定多个数据源：
+
+```bash
+CODEX_USAGE_SESSIONS="$HOME/.codex/sessions:/mnt/c/Users/<WindowsUsername>/.codex/sessions" npm run web
 ```
 
 ## API
@@ -243,6 +259,7 @@ GET /api/usage
 | 参数 | 示例 | 说明 |
 | --- | --- | --- |
 | `range` | `all`、`today`、`24h`、`7d`、`30d`、`12w`、`custom` | 时间范围 |
+| `sourceScope` | `all`、`local`、`windows` | 数据源范围 |
 | `from` | `2026-04-01` | `range=custom` 时的开始日期 |
 | `to` | `2026-04-30` | `range=custom` 时的结束日期 |
 | `group` | `day` | 分组方式 |

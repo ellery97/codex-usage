@@ -7,6 +7,7 @@ const state = {
 };
 
 const els = {
+  sourceSelect: document.getElementById("sourceSelect"),
   rangeSelect: document.getElementById("rangeSelect"),
   groupSelect: document.getElementById("groupSelect"),
   sortSelect: document.getElementById("sortSelect"),
@@ -139,6 +140,7 @@ function buildQuery() {
   const sort = els.sortSelect.value;
   const direction = els.directionSelect.value;
   params.set("range", els.rangeSelect.value);
+  params.set("sourceScope", els.sourceSelect.value);
   params.set("group", group);
   params.set("sort", sort);
   params.set("limit", els.limitInput.value || "0");
@@ -186,7 +188,8 @@ function render() {
   const totals = data.totals || {};
   const stats = data.stats || {};
 
-  text.sourceLabel.textContent = data.source || "本地会话";
+  text.sourceLabel.textContent = formatSource(data.source);
+  text.sourceLabel.title = sourceTitle(data.source);
   text.rangeLabel.textContent = `范围：${formatRange(data.range)}`;
   text.updatedLabel.textContent = `更新时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`;
 
@@ -239,6 +242,22 @@ function formatRange(range) {
   const from = range.from ? range.from.slice(0, 10) : "开始";
   const to = range.to ? range.to.slice(0, 10) : "当前";
   return `${from} .. ${to}`;
+}
+
+function formatSource(source) {
+  if (Array.isArray(source)) {
+    if (source.length === 0) return "本地会话";
+    if (source.length === 1) return source[0];
+    return `${source.length} 个会话目录`;
+  }
+  return source || "本地会话";
+}
+
+function sourceTitle(source) {
+  if (Array.isArray(source)) {
+    return source.join("\n");
+  }
+  return source || "";
 }
 
 function groupName(group) {

@@ -29,6 +29,14 @@
     <main class="shell">
       <section class="control-grid" aria-label="仪表盘筛选条件">
         <label>
+          <span>数据源</span>
+          <select id="sourceSelect">
+            <option value="all" selected>全部目录</option>
+            <option value="local">WSL / Linux</option>
+            <option value="windows">Windows</option>
+          </select>
+        </label>
+        <label>
           <span>范围</span>
           <select id="rangeSelect">
             <option value="all">全部时间</option>

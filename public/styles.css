@@ -167,7 +167,7 @@ button {
 
 .control-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(128px, 1fr)) auto;
+  grid-template-columns: repeat(7, minmax(116px, 1fr)) auto;
   gap: 13px;
   align-items: end;
   margin-bottom: 18px;

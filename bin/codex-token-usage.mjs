@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -24,6 +24,8 @@ const DATE_FORMATTERS = new Map();
 const TIME_FORMATTERS = new Map();
 const DATE_KEY_CACHE = new Map();
 const DATE_TIME_CACHE = new Map();
+export const DEFAULT_WINDOWS_SESSIONS_DIR = "/mnt/c/Users/<WindowsUsername>/.codex/sessions";
+const SESSION_DIR_SEPARATOR = ":";
 
 function usageZero() {
   return {
@@ -102,6 +104,39 @@ function expandHome(inputPath) {
   return inputPath;
 }
 
+function normalizeSessionDirs(dirs) {
+  const seen = new Set();
+  const normalized = [];
+  for (const dir of dirs) {
+    const expanded = expandHome(dir);
+    if (!expanded) {
+      continue;
+    }
+    const resolved = path.resolve(expanded);
+    if (seen.has(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    normalized.push(resolved);
+  }
+  return normalized;
+}
+
+function envSessionDirs() {
+  return String(process.env.CODEX_USAGE_SESSIONS || "")
+    .split(SESSION_DIR_SEPARATOR)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function defaultSessionDirs(codexHome) {
+  const dirs = [path.join(codexHome, "sessions")];
+  if (existsSync(DEFAULT_WINDOWS_SESSIONS_DIR)) {
+    dirs.push(DEFAULT_WINDOWS_SESSIONS_DIR);
+  }
+  return normalizeSessionDirs(dirs);
+}
+
 function defaultTimezone() {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -148,6 +183,8 @@ export function parseArgs(argv) {
   const options = {
     codexHome: process.env.CODEX_HOME || path.join(homedir(), ".codex"),
     sessionsDir: null,
+    sessionsDirs: [],
+    sessionsExplicit: false,
     fromMs: null,
     toMs: null,
     group: "month",
@@ -176,7 +213,8 @@ export function parseArgs(argv) {
     } else if (arg === "--codex-home") {
       options.codexHome = expandHome(next());
     } else if (arg === "--sessions" || arg === "--sessions-dir") {
-      options.sessionsDir = expandHome(next());
+      options.sessionsDirs.push(next());
+      options.sessionsExplicit = true;
     } else if (arg === "--from" || arg === "--since") {
       options.fromMs = parseDateBound(next());
     } else if (arg === "--to" || arg === "--until") {
@@ -223,7 +261,17 @@ export function parseArgs(argv) {
   }
 
   options.codexHome = expandHome(options.codexHome);
-  options.sessionsDir = options.sessionsDir || path.join(options.codexHome, "sessions");
+  if (!options.sessionsExplicit) {
+    const fromEnv = envSessionDirs();
+    if (fromEnv.length > 0) {
+      options.sessionsDirs = fromEnv;
+      options.sessionsExplicit = true;
+    }
+  }
+  options.sessionsDirs = options.sessionsExplicit
+    ? normalizeSessionDirs(options.sessionsDirs)
+    : defaultSessionDirs(options.codexHome);
+  options.sessionsDir = options.sessionsDirs[0] || path.join(options.codexHome, "sessions");
   options.sort = options.sort || (DATE_GROUPS.has(options.group) ? "key" : "total");
   options.desc = argv.includes("--desc") || (!DATE_GROUPS.has(options.group) && !argv.includes("--asc"));
   return options;
@@ -236,7 +284,7 @@ function helpText() {
 
 Options:
   --codex-home PATH       Codex home directory. Default: $CODEX_HOME or ~/.codex
-  --sessions PATH         Sessions directory. Default: <codex-home>/sessions
+  --sessions PATH         Sessions directory. Can be repeated. Default: <codex-home>/sessions plus Windows sessions when present
   --from, --since DATE    Include token events at or after DATE
   --to, --until DATE      Include token events through DATE if DATE is YYYY-MM-DD
   --last DURATION         Include recent events, e.g. 24h, 7d, 4w
@@ -253,6 +301,7 @@ Options:
 
 Notes:
   - The tool reads local Codex JSONL session files and aggregates event_msg.token_count.
+  - CODEX_USAGE_SESSIONS can provide multiple sessions directories separated by ":".
   - Duplicate token_count lines with the same cumulative total are skipped.
   - Global dedupe also skips copied historical token_count events embedded in later rollouts.
   - estimated_cost_usd uses a local OpenAI API pricing snapshot and is only an estimate.
@@ -591,6 +640,10 @@ function fmtUsd(value) {
   return `$${n.toFixed(4)}`;
 }
 
+function sourceLabel(options) {
+  return options.sessionsDirs.join(", ");
+}
+
 function table(rows) {
   const headers = [
     "group",
@@ -693,7 +746,7 @@ function rangeLabel(options) {
 function textOutput(result, options, scanStats) {
   const lines = [];
   lines.push("Codex token usage");
-  lines.push(`Source: ${options.sessionsDir}`);
+  lines.push(`Source: ${sourceLabel(options)}`);
   lines.push(`Range: ${rangeLabel(options)}`);
   lines.push(`Timezone: ${options.timezone}`);
   lines.push(
@@ -730,7 +783,11 @@ function textOutput(result, options, scanStats) {
 }
 
 export async function buildUsagePayload(options) {
-  const files = await findJsonlFiles(options.sessionsDir);
+  const files = [];
+  for (const sessionsDir of options.sessionsDirs) {
+    const dirFiles = await findJsonlFiles(sessionsDir);
+    files.push(...dirFiles);
+  }
   const events = [];
   const scanStats = {
     files: files.length,
@@ -766,7 +823,7 @@ export async function buildUsagePayload(options) {
 
   const result = aggregate(events, options);
   const payload = {
-    source: options.sessionsDir,
+    source: options.sessionsDirs,
     range: {
       from: options.fromMs == null ? null : new Date(options.fromMs).toISOString(),
       to: options.toMs == null ? null : new Date(options.toMs).toISOString(),

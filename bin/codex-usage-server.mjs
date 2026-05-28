@@ -3,10 +3,18 @@
 import { createReadStream } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import http from "node:http";
+import { homedir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { findJsonlFiles, formatDateKey, formatDateTime, parseArgs, scanSessionFile } from "./codex-token-usage.mjs";
+import {
+  DEFAULT_WINDOWS_SESSIONS_DIR,
+  findJsonlFiles,
+  formatDateKey,
+  formatDateTime,
+  parseArgs,
+  scanSessionFile,
+} from "./codex-token-usage.mjs";
 import { estimateUsageCostUsd, pricingMetadata } from "./openai-pricing.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -25,6 +33,7 @@ const ENABLE_GC = process.env.CODEX_USAGE_GC !== "0";
 const GROUPS = new Set(["none", "day", "month", "model", "cwd", "session"]);
 const SORTS = new Set(["key", "total", "input", "output", "cached", "reasoning", "requests", "sessions", "cost"]);
 const DEDUPE_SCOPES = new Set(["global", "file"]);
+const SOURCE_SCOPES = new Set(["all", "local", "windows"]);
 const RANGE_TO_LAST = new Map([
   ["24h", "24h"],
   ["7d", "7d"],
@@ -56,12 +65,28 @@ function clampInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, n));
 }
 
+function localSessionsDir() {
+  return path.join(process.env.CODEX_HOME || path.join(homedir(), ".codex"), "sessions");
+}
+
+function sourceScopeFromQuery(searchParams) {
+  const value = searchParams.get("sourceScope") || "all";
+  return SOURCE_SCOPES.has(value) ? value : "all";
+}
+
 function usageArgvFromQuery(searchParams) {
   const group = searchParams.get("group") || "month";
   const sort = searchParams.get("sort") || (group === "day" || group === "month" ? "key" : "total");
   const dedupeScope = searchParams.get("dedupeScope") || "global";
   const range = searchParams.get("range") || "all";
+  const sourceScope = sourceScopeFromQuery(searchParams);
   const args = ["--group", GROUPS.has(group) ? group : "month", "--sort", SORTS.has(sort) ? sort : "total"];
+
+  if (sourceScope === "local") {
+    args.push("--sessions", localSessionsDir());
+  } else if (sourceScope === "windows") {
+    args.push("--sessions", DEFAULT_WINDOWS_SESSIONS_DIR);
+  }
 
   const limit = clampInt(searchParams.get("limit"), group === "cwd" || group === "session" ? 30 : 0, 0, 500);
   if (limit > 0) {
@@ -93,7 +118,9 @@ function usageArgvFromQuery(searchParams) {
 }
 
 function optionsFromQuery(searchParams) {
-  return parseArgs(usageArgvFromQuery(searchParams));
+  const options = parseArgs(usageArgvFromQuery(searchParams));
+  options.sourceScope = sourceScopeFromQuery(searchParams);
+  return options;
 }
 
 async function mapLimit(items, limit, mapper) {
@@ -178,6 +205,7 @@ async function openUsageIndex() {
     checkedAt: 0,
     lastSync: null,
     refreshPromise: null,
+    refreshKey: null,
     statements: {
       allFiles: db.prepare("SELECT path, size, mtime_ms FROM files"),
       deleteEvents: db.prepare("DELETE FROM events WHERE file_path = ?"),
@@ -210,30 +238,102 @@ async function openUsageIndex() {
   };
 }
 
-async function ensureFreshIndex(index, sessionsDir) {
+function sessionsKey(sessionsDirs) {
+  return sessionsDirs.join("\n");
+}
+
+function filePathInSessions(filePath, sessionsDirs) {
+  const resolved = path.resolve(filePath);
+  return sessionsDirs.some((dir) => resolved === dir || resolved.startsWith(`${dir}${path.sep}`));
+}
+
+function escapeLike(value) {
+  return String(value).replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+function filePathFilter(column, sessionsDirs) {
+  const parts = [];
+  const params = [];
+  for (const sessionsDir of sessionsDirs) {
+    parts.push(`(${column} = ? OR ${column} LIKE ? ESCAPE '\\')`);
+    params.push(sessionsDir, `${escapeLike(sessionsDir)}${path.sep}%`);
+  }
+  return {
+    sql: parts.length ? `(${parts.join(" OR ")})` : "1 = 0",
+    params,
+  };
+}
+
+function fileStatsForSessions(index, sessionsDirs) {
+  const filter = filePathFilter("path", sessionsDirs);
+  return index.db
+    .prepare(`
+      SELECT
+        COUNT(*) AS files,
+        COALESCE(SUM(CASE WHEN events_count > 0 THEN 1 ELSE 0 END), 0) AS filesWithUsage,
+        COALESCE(SUM(duplicate_token_events), 0) AS duplicateTokenEvents,
+        COALESCE(SUM(parse_errors), 0) AS parseErrors,
+        COALESCE(SUM(raw_token_events), 0) AS rawTokenEvents
+      FROM files
+      WHERE ${filter.sql}
+    `)
+    .get(...filter.params);
+}
+
+function globalDupesForSessions(index, sessionsDirs) {
+  const filter = filePathFilter("file_path", sessionsDirs);
+  const row = index.db
+    .prepare(`
+      SELECT COUNT(*) - COUNT(DISTINCT total_usage_key) AS globalDuplicateTokenEvents
+      FROM events
+      WHERE ${filter.sql}
+    `)
+    .get(...filter.params);
+  return Number(row.globalDuplicateTokenEvents || 0);
+}
+
+async function collectJsonlFiles(sessionsDirs) {
+  const files = [];
+  for (const sessionsDir of sessionsDirs) {
+    const dirFiles = await findJsonlFiles(sessionsDir);
+    files.push(...dirFiles);
+  }
+  return files;
+}
+
+async function ensureFreshIndex(index, sessionsDirs) {
   const now = Date.now();
-  if (index.lastSync?.sessionsDir === sessionsDir && now - index.checkedAt < SCAN_CHECK_TTL_MS) {
+  const key = sessionsKey(sessionsDirs);
+  if (index.lastSync?.sessionsKey === key && now - index.checkedAt < SCAN_CHECK_TTL_MS) {
     return index.lastSync;
   }
   if (index.refreshPromise) {
-    return index.refreshPromise;
+    if (index.refreshKey === key) {
+      return index.refreshPromise;
+    }
+    await index.refreshPromise;
+    if (index.lastSync?.sessionsKey === key && Date.now() - index.checkedAt < SCAN_CHECK_TTL_MS) {
+      return index.lastSync;
+    }
   }
 
-  index.refreshPromise = refreshIndex(index, sessionsDir).finally(() => {
+  index.refreshKey = key;
+  index.refreshPromise = refreshIndex(index, sessionsDirs, key).finally(() => {
     index.refreshPromise = null;
+    index.refreshKey = null;
   });
   return index.refreshPromise;
 }
 
-async function refreshIndex(index, sessionsDir) {
+async function refreshIndex(index, sessionsDirs, key) {
   const startedAt = Date.now();
-  const filePaths = await findJsonlFiles(sessionsDir);
+  const filePaths = await collectJsonlFiles(sessionsDirs);
   const currentPaths = new Set(filePaths);
   const knownFiles = new Map(index.statements.allFiles.all().map((row) => [row.path, row]));
 
   let deletedFiles = 0;
   for (const filePath of knownFiles.keys()) {
-    if (!currentPaths.has(filePath)) {
+    if (filePathInSessions(filePath, sessionsDirs) && !currentPaths.has(filePath)) {
       index.db.exec("BEGIN IMMEDIATE");
       try {
         index.statements.deleteEvents.run(filePath);
@@ -265,9 +365,10 @@ async function refreshIndex(index, sessionsDir) {
     changedFiles += 1;
   });
 
-  const fileSummary = index.statements.fileStats.get();
+  const fileSummary = fileStatsForSessions(index, sessionsDirs);
   const sync = {
-    sessionsDir,
+    sessionsDirs,
+    sessionsKey: key,
     files: Number(fileSummary.files || 0),
     filesWithUsage: Number(fileSummary.filesWithUsage || 0),
     duplicateTokenEvents: Number(fileSummary.duplicateTokenEvents || 0),
@@ -330,6 +431,7 @@ function writeScannedFile(index, fileInfo, scanned) {
 function sourceCte(options) {
   const filters = ["timestamp_ms IS NOT NULL"];
   const params = [];
+  const sourceFilter = filePathFilter("file_path", options.sessionsDirs);
   if (options.fromMs != null) {
     filters.push("timestamp_ms >= ?");
     params.push(options.fromMs);
@@ -350,18 +452,19 @@ function sourceCte(options) {
               ORDER BY file_path, event_index
             ) AS rn
           FROM events e
+          WHERE ${sourceFilter.sql}
         ),
         source AS (
           SELECT * FROM ranked WHERE rn = 1
         )`
       : `
         source AS (
-          SELECT * FROM events
+          SELECT * FROM events WHERE ${sourceFilter.sql}
         )`;
 
   return {
     sql: `WITH ${source}, filtered AS (SELECT * FROM source WHERE ${filters.join(" AND ")})`,
-    params,
+    params: [...sourceFilter.params, ...params],
   };
 }
 
@@ -399,11 +502,11 @@ function usagePayloadFromIndex(index, syncStats, options) {
   const limitedRows = options.limit > 0 ? rows.slice(0, options.limit) : rows;
   const globalDupes =
     options.dedupeScope === "global"
-      ? Number(index.statements.globalDupes.get().globalDuplicateTokenEvents || 0)
+      ? globalDupesForSessions(index, options.sessionsDirs)
       : 0;
 
   return {
-    source: options.sessionsDir,
+    source: options.sessionsDirs,
     range: {
       from: options.fromMs == null ? null : new Date(options.fromMs).toISOString(),
       to: options.toMs == null ? null : new Date(options.toMs).toISOString(),
@@ -412,6 +515,7 @@ function usagePayloadFromIndex(index, syncStats, options) {
     group: options.group,
     sort: options.sort,
     desc: options.desc,
+    sourceScope: options.sourceScope || "all",
     dedupeScope: options.dedupeScope,
     totals: {
       sessions: Number(totals.sessions || 0),
@@ -578,7 +682,7 @@ function compareRows(a, b, options) {
 
 async function runUsage(index, searchParams) {
   const options = optionsFromQuery(searchParams);
-  const syncStats = await ensureFreshIndex(index, options.sessionsDir);
+  const syncStats = await ensureFreshIndex(index, options.sessionsDirs);
   const payload = usagePayloadFromIndex(index, syncStats, options);
   maybeCollectGarbage();
   return payload;
