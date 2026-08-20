@@ -8,7 +8,8 @@
 
 ```text
 ~/.codex/sessions/**/*.jsonl
-/mnt/c/Users/<WindowsUsername>/.codex/sessions/**/*.jsonl  # 目录存在时自动加入
+/mnt/c/Users/*/.codex/sessions/**/*.jsonl  # 目录存在时自动加入
+/mnt/c/Users/*/.codex/archived_sessions/**/*.jsonl  # 目录存在时自动加入
 ```
 
 工具只读取 `event_msg.token_count`、`turn_context` 和 `session_meta` 相关记录，用于还原
@@ -22,14 +23,15 @@ token 用量、模型、工作目录和会话信息，不输出会话正文。
 - 提供本地 Web 页面，展示汇总卡片、Token 用量趋势、Token 构成、扫描状态和明细表。
 - Web 服务使用 SQLite 持久索引，首次扫描后复用索引，只增量重扫新增或变更过的会话文件。
 - 按 OpenAI API 官方标准 token 价格估算美元消耗，并支持按金额排序。
-- 在 WSL 环境下默认自动合并 Windows 侧 Codex 会话目录 `/mnt/c/Users/<WindowsUsername>/.codex/sessions`。
+- 在 WSL 环境下默认自动合并 Windows 侧 Codex 当前会话目录和归档会话目录。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
 
 ## 环境要求
 
 - Node.js，需要支持内置 `node:sqlite` 的版本。当前项目已在 `v22.22.0` 下验证。
 - 不需要安装第三方 npm 依赖，项目只使用 Node.js 标准库。
-- 本机需要存在 Codex 会话日志目录，默认是 `~/.codex/sessions`；如果 Windows 侧目录存在，也会自动加入。
+- 本机需要存在 Codex 会话日志目录，默认是 `~/.codex/sessions`；如果 WSL 下能访问 Windows 侧
+  `/mnt/c/Users/*/.codex/sessions` 或 `/mnt/c/Users/*/.codex/archived_sessions`，也会自动加入。
 
 如果启动 Web 服务时报 `No such built-in module: node:sqlite`，请升级 Node.js。
 
@@ -59,6 +61,30 @@ http://127.0.0.1:8787
 npm run smoke
 ```
 
+## macOS 分享版使用
+
+对方在 Mac 上解压分享包后：
+
+```bash
+cd codex_usage
+npm run usage
+npm run web
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8787
+```
+
+注意事项：
+
+- 需要先安装 Node.js 22 或更新版本，建议使用和本项目验证一致的 `v22.22.0`。
+- 项目没有第三方 npm 依赖，正常情况下不需要执行 `npm install`。
+- macOS 默认读取 `~/.codex/sessions`。如果对方的 Codex 日志不在默认位置，可以用
+  `CODEX_HOME=/path/to/.codex npm run usage`，或用 `--sessions` 显式指定日志目录。
+- 本工具只读取本机 Codex 会话日志，不需要 OpenAI API Key，也不会上传数据。
+
 ## Web 仪表盘
 
 Web 服务入口是：
@@ -81,7 +107,7 @@ npm run web
 
 首次打开页面时会完整扫描历史 JSONL 文件并写入索引；之后刷新或切换范围、分组、排序时，
 服务会根据文件 `size` 和 `mtime` 判断哪些文件发生变化，只重扫变化文件。
-页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换。
+页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换；Windows 口径包含当前会话和归档会话。
 
 `.codex-usage/` 已写入 `.gitignore`，不会提交到 Git。
 
@@ -111,11 +137,14 @@ node ./bin/codex-token-usage.mjs --group cwd --sort total --desc --limit 20
 # 按官方 API 标准价估算模型消耗金额
 node ./bin/codex-token-usage.mjs --group model --sort cost --desc --limit 20
 
-# 只统计 Windows 侧 Codex 会话
-node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions
+# 只统计 Windows 侧 Codex 当前会话
+node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions
+
+# 显式统计 Windows 侧当前会话和归档会话
+node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/archived_sessions
 
 # 显式合并多个会话目录
-node ./bin/codex-token-usage.mjs --sessions ~/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions
+node ./bin/codex-token-usage.mjs --sessions ~/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/archived_sessions
 
 # 输出 CSV，方便导入表格
 node ./bin/codex-token-usage.mjs --group month --csv > codex_usage.csv
@@ -185,9 +214,20 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 
 ## 金额估算口径
 
-金额估算使用 `bin/openai-pricing.mjs` 中的本地价格快照，当前快照时间为 `2026-05-14`，
+金额估算使用 `bin/openai-pricing.mjs` 中的本地价格快照，当前快照时间为 `2026-08-20`，
 口径是 OpenAI API 标准 text token 价格，不包含 Batch 折扣、Flex/Priority 差异、区域加价、
 订阅权益、税费或账户级优惠。
+
+GPT-5.6 按官方三档模型计价（每 100 万 Token）：
+
+| 模型 | 普通输入 | 缓存输入 | 输出 |
+| --- | ---: | ---: | ---: |
+| `gpt-5.6` / `gpt-5.6-sol` | $5.00 | $0.50 | $30.00 |
+| `gpt-5.6-terra` | $2.00 | $0.20 | $12.00 |
+| `gpt-5.6-luna` | $0.20 | $0.02 | $1.20 |
+
+其中 `gpt-5.6` 是 `gpt-5.6-sol` 的别名。GPT-5.6 单次请求输入超过 272,000 Token 时，
+整次请求的输入和缓存输入按 2 倍计价，输出按 1.5 倍计价。
 
 估算公式：
 
@@ -200,13 +240,18 @@ estimated_cost_usd =
 
 `input_tokens` 已包含缓存输入，因此会先扣除 `cached_input_tokens` 再按普通输入计价。
 `output_tokens` 已包含 `reasoning_output_tokens`，所以推理输出不会重复计价。
+GPT-5.6 官方缓存写入价格是普通输入的 1.25 倍；当前 Codex 会话日志没有单独提供
+`cache_write_tokens` 字段，因此本工具暂时无法把缓存写入加价单独计入预估金额。
 
 如果某个模型没有出现在价格快照中，对应请求会计入 `unpriced_requests` 和
 `unpriced_total_tokens`，金额按 `0` 处理，前端会提示有未计价 token。
 
 价格来源主要参考：
 
-- <https://openai.com/api/pricing/>
+- <https://developers.openai.com/api/docs/pricing>
+- <https://developers.openai.com/api/docs/models/gpt-5.6-sol>
+- <https://developers.openai.com/api/docs/models/gpt-5.6-terra>
+- <https://developers.openai.com/api/docs/models/gpt-5.6-luna>
 - <https://developers.openai.com/api/docs/models/gpt-5.5>
 - <https://developers.openai.com/api/docs/models/gpt-5.4>
 - <https://developers.openai.com/api/docs/models/gpt-5.4-mini>
@@ -243,7 +288,7 @@ CODEX_USAGE_PORT=8788 CODEX_USAGE_DB=/tmp/codex-usage.sqlite npm run web
 显式指定多个数据源：
 
 ```bash
-CODEX_USAGE_SESSIONS="$HOME/.codex/sessions:/mnt/c/Users/<WindowsUsername>/.codex/sessions" npm run web
+CODEX_USAGE_SESSIONS="$HOME/.codex/sessions:/mnt/c/Users/<Windows用户名>/.codex/sessions:/mnt/c/Users/<Windows用户名>/.codex/archived_sessions" npm run web
 ```
 
 ## API

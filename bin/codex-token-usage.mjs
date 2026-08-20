@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -24,8 +24,23 @@ const DATE_FORMATTERS = new Map();
 const TIME_FORMATTERS = new Map();
 const DATE_KEY_CACHE = new Map();
 const DATE_TIME_CACHE = new Map();
-export const DEFAULT_WINDOWS_SESSIONS_DIR = "/mnt/c/Users/<WindowsUsername>/.codex/sessions";
+export const DEFAULT_WINDOWS_USERS_ROOT = "/mnt/c/Users";
+const DEFAULT_WINDOWS_USER =
+  process.env.CODEX_USAGE_WINDOWS_USER || process.env.USERNAME || process.env.USER || "windows-user";
+export const DEFAULT_WINDOWS_SESSIONS_DIR = path.join(
+  DEFAULT_WINDOWS_USERS_ROOT,
+  DEFAULT_WINDOWS_USER,
+  ".codex",
+  "sessions",
+);
+export const DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR = path.join(
+  DEFAULT_WINDOWS_USERS_ROOT,
+  DEFAULT_WINDOWS_USER,
+  ".codex",
+  "archived_sessions",
+);
 const SESSION_DIR_SEPARATOR = ":";
+const SKIP_WINDOWS_USER_DIRS = new Set(["All Users", "Default", "Default User", "Public"]);
 
 function usageZero() {
   return {
@@ -129,11 +144,29 @@ function envSessionDirs() {
     .filter(Boolean);
 }
 
-function defaultSessionDirs(codexHome) {
-  const dirs = [path.join(codexHome, "sessions")];
-  if (existsSync(DEFAULT_WINDOWS_SESSIONS_DIR)) {
-    dirs.push(DEFAULT_WINDOWS_SESSIONS_DIR);
+export function defaultWindowsSessionDirs() {
+  const dirs = [];
+  if (existsSync(DEFAULT_WINDOWS_USERS_ROOT)) {
+    try {
+      for (const entry of readdirSync(DEFAULT_WINDOWS_USERS_ROOT, { withFileTypes: true })) {
+        if (!entry.isDirectory() || SKIP_WINDOWS_USER_DIRS.has(entry.name)) {
+          continue;
+        }
+        const userCodexHome = path.join(DEFAULT_WINDOWS_USERS_ROOT, entry.name, ".codex");
+        dirs.push(path.join(userCodexHome, "sessions"));
+        dirs.push(path.join(userCodexHome, "archived_sessions"));
+      }
+    } catch {
+      dirs.push(DEFAULT_WINDOWS_SESSIONS_DIR, DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR);
+    }
+  } else {
+    dirs.push(DEFAULT_WINDOWS_SESSIONS_DIR, DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR);
   }
+  return normalizeSessionDirs(dirs.filter((dir) => existsSync(dir)));
+}
+
+function defaultSessionDirs(codexHome) {
+  const dirs = [path.join(codexHome, "sessions"), ...defaultWindowsSessionDirs()];
   return normalizeSessionDirs(dirs);
 }
 

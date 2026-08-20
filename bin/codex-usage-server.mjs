@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_WINDOWS_SESSIONS_DIR,
+  defaultWindowsSessionDirs,
   findJsonlFiles,
   formatDateKey,
   formatDateTime,
@@ -74,6 +75,17 @@ function sourceScopeFromQuery(searchParams) {
   return SOURCE_SCOPES.has(value) ? value : "all";
 }
 
+function addWindowsSessionArgs(args) {
+  const dirs = defaultWindowsSessionDirs();
+  if (dirs.length === 0) {
+    args.push("--sessions", DEFAULT_WINDOWS_SESSIONS_DIR);
+    return;
+  }
+  for (const dir of dirs) {
+    args.push("--sessions", dir);
+  }
+}
+
 function usageArgvFromQuery(searchParams) {
   const group = searchParams.get("group") || "month";
   const sort = searchParams.get("sort") || (group === "day" || group === "month" ? "key" : "total");
@@ -85,7 +97,7 @@ function usageArgvFromQuery(searchParams) {
   if (sourceScope === "local") {
     args.push("--sessions", localSessionsDir());
   } else if (sourceScope === "windows") {
-    args.push("--sessions", DEFAULT_WINDOWS_SESSIONS_DIR);
+    addWindowsSessionArgs(args);
   }
 
   const limit = clampInt(searchParams.get("limit"), group === "cwd" || group === "session" ? 30 : 0, 0, 500);
