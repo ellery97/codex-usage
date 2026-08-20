@@ -1,5 +1,8 @@
 # Codex Token 用量统计
 
+[![CI](https://github.com/ellery97/codex-usage/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ellery97/codex-usage/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 一个本地 Codex token 用量统计工具。它读取本机 Codex 会话目录中的 JSONL 日志，
 统计输入、缓存输入、输出、推理输出、总 token、请求数、会话数、缓存命中率和预估金额，并提供
 命令行输出和本地 Web 仪表盘两种使用方式。
@@ -271,7 +274,7 @@ GPT-5.6 官方缓存写入价格是普通输入的 1.25 倍；当前 Codex 会�
 | --- | --- | --- |
 | `PORT` | `8787` | Web 服务端口，优先级高于 `CODEX_USAGE_PORT` |
 | `CODEX_USAGE_PORT` | `8787` | Web 服务端口 |
-| `HOST` | `127.0.0.1` | Web 服务监听地址 |
+| `HOST` | `127.0.0.1` | Web 服务监听地址；服务没有认证，不建议绑定到 `0.0.0.0` 或暴露到不受信任的网络 |
 | `CODEX_USAGE_DB` | `.codex-usage/cache.sqlite` | SQLite 索引文件路径 |
 | `CODEX_USAGE_SCAN_CHECK_TTL_MS` | `1000` | 文件变更检查 TTL，单位毫秒 |
 | `CODEX_USAGE_SCAN_CONCURRENCY` | `8` | 重扫会话文件的并发数，范围会限制在 `1` 到 `32` |
@@ -331,9 +334,25 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 │   ├── index.html                 # 仪表盘页面
 │   ├── app.js                     # 前端交互、图表和表格渲染
 │   └── styles.css                 # 页面样式
+├── test/
+│   └── openai-pricing.test.mjs    # 价格与长上下文规则测试
+├── .github/                       # CI、Dependabot、Issue/PR 模板
+├── LICENSE
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── CODE_OF_CONDUCT.md
 ├── package.json
+├── package-lock.json
 └── README.md
 ```
+
+## 开源协作
+
+- 贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 安全漏洞请按 [SECURITY.md](SECURITY.md) 私下报告，不要直接创建公开 Issue。
+- 行为规范见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+- 本项目只处理本机 Codex 日志；请勿提交会话 JSONL、SQLite 数据库、提示词或其他个人数据。
 
 ## 常见问题
 

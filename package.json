@@ -1,8 +1,21 @@
 {
   "name": "codex-usage",
   "version": "0.1.0",
+  "description": "A local CLI and web dashboard for analyzing Codex token usage and estimating API costs.",
   "private": true,
+  "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ellery97/codex-usage.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ellery97/codex-usage/issues"
+  },
+  "homepage": "https://github.com/ellery97/codex-usage#readme",
   "bin": {
     "codex-token-usage": "./bin/codex-token-usage.mjs"
   },

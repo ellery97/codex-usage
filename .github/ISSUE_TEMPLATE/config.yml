@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞报告
+    url: https://github.com/ellery97/codex-usage/security/advisories/new
+    about: 请通过私下安全公告报告漏洞，不要创建公开 Issue。

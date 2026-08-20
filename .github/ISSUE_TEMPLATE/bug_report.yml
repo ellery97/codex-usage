@@ -1,0 +1,43 @@
+name: Bug report
+description: 报告一个可复现的问题
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请不要在 Issue 中粘贴 Codex 会话原文、密钥、Token 或其他个人数据。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请说明实际结果和预期结果。
+      placeholder: 发生了什么？你期望发生什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请提供最小复现步骤和命令。
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js 版本
+      placeholder: v22.x.x
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误信息
+      description: 请先删除路径、用户名、Token 和会话内容等敏感信息。
+      render: text
