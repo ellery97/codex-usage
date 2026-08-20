@@ -3,6 +3,8 @@
 [![CI](https://github.com/ellery97/codex-usage/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ellery97/codex-usage/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+[English version](README.en.md)
+
 一个本地 Codex token 用量统计工具。它读取本机 Codex 会话目录中的 JSONL 日志，
 统计输入、缓存输入、输出、推理输出、总 token、请求数、会话数、缓存命中率和预估金额，并提供
 命令行输出和本地 Web 仪表盘两种使用方式。
@@ -344,6 +346,7 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 ├── CODE_OF_CONDUCT.md
 ├── package.json
 ├── package-lock.json
+├── README.en.md
 └── README.md
 ```
 
