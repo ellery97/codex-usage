@@ -66,12 +66,11 @@ http://127.0.0.1:8787
 npm run smoke
 ```
 
-## macOS 分享版使用
+## macOS 使用
 
-对方在 Mac 上解压分享包后：
+本项目支持在 macOS 上直接运行。在项目根目录执行：
 
 ```bash
-cd codex_usage
 npm run usage
 npm run web
 ```
@@ -82,13 +81,13 @@ npm run web
 http://127.0.0.1:8787
 ```
 
-注意事项：
+使用说明：
 
-- 需要先安装 Node.js 22 或更新版本，建议使用和本项目验证一致的 `v22.22.0`。
+- 需要安装 Node.js 22 或更高版本；项目已在 `v22.22.0` 下验证。
 - 项目没有第三方 npm 依赖，正常情况下不需要执行 `npm install`。
-- macOS 默认读取 `~/.codex/sessions`。如果对方的 Codex 日志不在默认位置，可以用
-  `CODEX_HOME=/path/to/.codex npm run usage`，或用 `--sessions` 显式指定日志目录。
-- 本工具只读取本机 Codex 会话日志，不需要 OpenAI API Key，也不会上传数据。
+- macOS 默认读取 `~/.codex/sessions`。如果日志位于其他目录，可以使用
+  `CODEX_HOME=/path/to/.codex npm run usage`，或通过 `--sessions` 显式指定目录。
+- 工具只读取本机 Codex 会话日志，不需要 OpenAI API Key，也不会上传数据。
 
 ## Web 仪表盘
 

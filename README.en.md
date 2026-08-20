@@ -63,19 +63,20 @@ Run the smoke check:
 npm run smoke
 ```
 
-## macOS sharing
+## Using on macOS
 
-After extracting the project on macOS:
+This project runs directly on macOS. From the project root, run:
 
 ```bash
-cd codex_usage
 npm run usage
 npm run web
 ```
 
 The default macOS source is `~/.codex/sessions`. If the logs are elsewhere, use
 `CODEX_HOME=/path/to/.codex npm run usage` or pass `--sessions` explicitly.
-The tool reads local logs only, needs no OpenAI API key, and does not upload data.
+Node.js 22 or later is required; the project was verified with `v22.22.0`.
+No third-party npm dependencies are required, and the tool reads local logs only without
+an OpenAI API key or any upload path.
 
 ## Web dashboard
 
