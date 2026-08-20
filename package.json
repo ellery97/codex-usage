@@ -22,6 +22,7 @@
   "scripts": {
     "test": "node --test",
     "usage": "node ./bin/codex-token-usage.mjs",
+    "update-pricing": "node ./bin/update-pricing.mjs",
     "web": "node --no-warnings --expose-gc ./bin/codex-usage-server.mjs",
     "smoke": "node ./bin/codex-token-usage.mjs --group month --limit 3 --json"
   }
