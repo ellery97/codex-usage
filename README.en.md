@@ -5,8 +5,9 @@
 
 [中文版](README.md)
 
-A local CLI and web dashboard for analyzing Codex token usage and estimating API costs.
-It reads Codex session logs on the local machine and does not upload session content.
+A local CLI and web dashboard for analyzing Codex token usage and estimating API-equivalent costs.
+It reads Codex session logs on the local machine and never uploads session content. At startup it
+only contacts fixed official OpenAI model-documentation URLs to validate public prices.
 
 ## Data sources
 
@@ -29,7 +30,7 @@ not printed or uploaded.
 - Export text, JSON, or CSV from the CLI.
 - View summary cards, usage trends, token composition, scan status, and detail tables in a local web dashboard.
 - Keep a persistent SQLite index and incrementally rescan only new or changed JSONL files.
-- Estimate USD cost using the OpenAI API standard token-price snapshot and sort by cost.
+- Select OpenAI API Standard prices at each event timestamp and distinguish official, assumed, and unpriced usage.
 - Discover Windows current and archived Codex session directories under WSL.
 - Use global deduplication by default to reduce double counting from copied historical rollout content.
 
@@ -63,6 +64,12 @@ Run the smoke check:
 npm run smoke
 ```
 
+Refresh the runtime pricing catalog manually:
+
+```bash
+npm run update-pricing
+```
+
 ## Using on macOS
 
 This project runs directly on macOS. From the project root, run:
@@ -75,8 +82,8 @@ npm run web
 The default macOS source is `~/.codex/sessions`. If the logs are elsewhere, use
 `CODEX_HOME=/path/to/.codex npm run usage` or pass `--sessions` explicitly.
 Node.js 22 or later is required; the project was verified with `v22.22.0`.
-No third-party npm dependencies are required, and the tool reads local logs only without
-an OpenAI API key or any upload path.
+No third-party npm dependencies or OpenAI API key are required. Startup only downloads fixed
+official model Markdown pages for price validation and never uploads log content.
 
 ## Web dashboard
 
@@ -92,6 +99,7 @@ later refreshes use file size and modification time to rescan only changed files
 
 The source selector supports all directories, WSL/Linux, and Windows (including archived sessions).
 `.codex-usage/` is ignored by Git and should never be committed.
+The runtime price history is stored beside the database as `pricing-history.json`.
 
 The server has no authentication and listens on `127.0.0.1` by default. Do not bind it to
 `0.0.0.0` or expose it to an untrusted network without adding an authenticated, protected proxy.
@@ -119,7 +127,7 @@ node ./bin/codex-token-usage.mjs --last 7d --group day --json
 # Find the 20 highest-token working directories
 node ./bin/codex-token-usage.mjs --group cwd --sort total --desc --limit 20
 
-# Sort models by estimated cost
+# Sort models by event-time Standard API reference cost
 node ./bin/codex-token-usage.mjs --group model --sort cost --desc --limit 20
 
 # Count only the Windows current-session directory
@@ -156,6 +164,7 @@ Available options:
 | `--timezone`, `--tz TZ` | Timezone for date grouping |
 | `--json` | Output JSON |
 | `--csv` | Output CSV |
+| `--no-refresh-pricing` | Skip network refresh and use the latest validated local catalog |
 | `-h`, `--help` | Show help |
 
 ## Accounting semantics
@@ -173,54 +182,81 @@ Use `--dedupe-scope file` when inspecting the raw records of one JSONL file. Use
 | --- | --- |
 | `input_tokens` | Input tokens, including cached input |
 | `cached_input_tokens` | Cached portion of input tokens |
-| `uncached_input_tokens` | `input_tokens - cached_input_tokens` |
+| `cache_write_input_tokens` | Input tokens used to populate a cache |
+| `uncached_input_tokens` | `input_tokens - cached_input_tokens - cache_write_input_tokens` |
 | `output_tokens` | Output tokens, including reasoning output |
 | `reasoning_output_tokens` | Reasoning portion of output tokens |
 | `total_tokens` | Total reported by Codex, usually input plus output |
 | `cache_hit_ratio` | `cached_input_tokens / input_tokens` |
-| `estimated_cost_usd` | Estimated USD amount from the local price snapshot |
+| `estimated_cost_usd` | Event-time USD estimate for models with published prices only |
+| `assumed_cost_usd` | Explicitly labelled assumption baseline |
+| `assumed_upper_bound_cost_usd` | Assumption upper bound |
+| `reference_total_cost_usd` | Official amount plus assumption baseline |
+| `reference_total_upper_bound_cost_usd` | Official amount plus assumption upper bound |
 | `priced_requests` | Requests matched to the price table |
-| `unpriced_requests` | Requests not matched to the price table |
-| `unpriced_total_tokens` | Tokens excluded from the cost estimate |
+| `assumed_requests` | Requests using an explicitly labelled route assumption |
+| `assumed_total_tokens` | Tokens using an explicitly labelled route assumption |
+| `unpriced_requests` | Requests with neither a published price nor an assumption route |
+| `unpriced_total_tokens` | Tokens with neither a published price nor an assumption route |
+| `provisional_priced_requests` | Requests priced with a provisional official-price baseline |
+| `provisional_priced_total_tokens` | Tokens priced with a provisional official-price baseline |
+| `provisional_estimated_cost_usd` | Portion of official cost coming from provisional versions |
 | `requests` | Number of token events, approximately the recorded request count |
 | `sessions` | Number of Codex sessions included |
 
-Cached input and reasoning output are subsets; do not add them again to `total_tokens`.
+Cached input, cache-write input, and reasoning output are subsets; do not add them again to `total_tokens`.
 
 ## Cost estimation
 
-The local snapshot was refreshed on 2026-08-20 and uses OpenAI API standard text-token prices
-per 1M tokens. It excludes Batch discounts, Flex/Priority differences, regional uplifts,
-subscriptions, taxes, and account-specific discounts.
+Costs come from a versioned catalog of OpenAI API Standard text-token prices. Each event selects
+the newest version whose effective time is not later than the event's UTC timestamp; an event
+exactly on a boundary uses the new version. Legacy prices without an authoritative effective date
+remain visible as `provisional` historical baselines.
 
-| Model | Input | Cached input | Output |
-| --- | ---: | ---: | ---: |
-| `gpt-5.6` / `gpt-5.6-sol` | $5.00 | $0.50 | $30.00 |
-| `gpt-5.6-terra` | $2.00 | $0.20 | $12.00 |
-| `gpt-5.6-luna` | $0.20 | $0.02 | $1.20 |
-
-`gpt-5.6` is an alias for `gpt-5.6-sol`. For GPT-5.6 requests with more than 272,000 input
-tokens, the full request uses 2x input and cached-input rates and 1.5x output rates.
+Built-in history lives at `pricing/openai-pricing.snapshot.json`. Runtime validation is stored as
+`.codex-usage/pricing-history.json` beside the SQLite database. The web server refreshes before
+listening, while the CLI refreshes before aggregation and output; `--help` stays offline. Refreshes
+use at most six concurrent requests, an eight-second overall timeout, and conditional
+`ETag`/`Last-Modified` requests. Partial or complete network failure falls back to the most recent
+validated local versions.
 
 ```text
-estimated_cost_usd =
-  (uncached input tokens * input rate
-   + cached input tokens * cached-input rate
-   + output tokens * output rate) / 1,000,000
+official cost =
+  (ordinary input * input rate
+   + cache reads * cached-input rate
+   + cache writes * cache-write rate
+   + output * output rate) / 1,000,000
+
+reference baseline = official cost + assumed baseline
+reference upper bound = official cost + assumed upper bound
 ```
 
-OpenAI documents GPT-5.6 cache writes at 1.25x the uncached input rate. Current Codex logs do
-not expose a separate `cache_write_tokens` field, so this tool cannot add that surcharge separately.
+These values are event-time Standard API-equivalent references, not ChatGPT subscription charges,
+Codex credits, or actual billing. They exclude Batch, Flex, Fast, regional uplifts, taxes, and
+account-specific discounts.
 
-Price references:
+`codex-auto-review` has no independently published price and never contributes to
+`estimated_cost_usd`. Its labelled reference route uses GPT-5.4 as the baseline from 2026-04-23,
+then GPT-5.6 Luna from 2026-07-30 with lower evidence; GPT-5.6 Sol is the upper bound in both
+periods. Cross-period results expose each route separately in `assumedModels[].routes`.
 
-- <https://developers.openai.com/api/docs/pricing>
-- <https://developers.openai.com/api/docs/models/gpt-5.6-sol>
-- <https://developers.openai.com/api/docs/models/gpt-5.6-terra>
-- <https://developers.openai.com/api/docs/models/gpt-5.6-luna>
+Refresh the runtime catalog or inspect changes without writing:
 
-Unknown models are counted in token totals and `unpriced_total_tokens`, but contribute zero to
-`estimated_cost_usd`.
+```bash
+npm run update-pricing
+npm run update-pricing -- --check
+```
+
+After verifying an authoritative effective date, seed a formal built-in version with
+`--seed --model ... --effective-from YYYY-MM-DD --source-url ...`. The updater and startup refresh
+share the same strict parser: it reads only `Pricing / Text tokens` and requires the page's
+`Model ID` to match exactly.
+
+Primary references:
+
+- `https://developers.openai.com/api/docs/models/<model>.md`
+- <https://openai.com/index/gpt-5-6/>
+- <https://alignment.openai.com/auto-review/>
 
 ## Web environment variables
 
@@ -230,6 +266,9 @@ Unknown models are counted in token totals and `unpriced_total_tokens`, but cont
 | `CODEX_USAGE_PORT` | `8787` | Web port |
 | `HOST` | `127.0.0.1` | Listen address; the server has no authentication |
 | `CODEX_USAGE_DB` | `.codex-usage/cache.sqlite` | SQLite index path |
+| `CODEX_USAGE_PRICING_CACHE` | `pricing-history.json` beside the database | Runtime versioned pricing catalog |
+| `CODEX_USAGE_PRICING_TIMEOUT_MS` | `8000` | Overall startup pricing-refresh timeout in milliseconds |
+| `CODEX_USAGE_PRICING_REFRESH` | non-`0` | Set to `0` to disable startup pricing refresh |
 | `CODEX_USAGE_SCAN_CHECK_TTL_MS` | `1000` | File-change check TTL in milliseconds |
 | `CODEX_USAGE_SCAN_CONCURRENCY` | `8` | Rescan concurrency, clamped to 1–32 |
 | `CODEX_USAGE_GC` | non-`0` | Set to `0` to disable explicit GC |
@@ -259,11 +298,16 @@ Example:
 http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&dedupeScope=global
 ```
 
+The response keeps existing fields and adds `assumedModels`, `unpricedModels`, provisional-price
+totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffectiveFrom`,
+`refreshStatus`, and `usedFallback`.
+
 ## Project structure
 
 ```text
 .
-├── bin/                          # CLI, web server, and pricing logic
+├── bin/                          # CLI, web server, catalog, refresh, and pricing updater
+├── pricing/                      # Built-in effective-dated price history
 ├── public/                       # Dashboard HTML, JavaScript, and CSS
 ├── test/                         # Node.js tests
 ├── .github/                      # CI, Dependabot, and contribution templates
@@ -294,8 +338,8 @@ the index and rescan only new or modified files.
 
 ### Does the tool upload session content?
 
-No. It reads local JSONL files only, serves the dashboard on `127.0.0.1`, and contains no external
-upload path.
+No. It reads local JSONL files only and serves the dashboard on `127.0.0.1`. Startup sends price
+validation requests to fixed `developers.openai.com` model Markdown URLs, but no session content.
 
 ### Why do global and file deduplication differ?
 
@@ -315,6 +359,8 @@ npm test
 node --check bin/codex-token-usage.mjs
 node --check bin/codex-usage-server.mjs
 node --check bin/openai-pricing.mjs
+node --check bin/pricing-catalog.mjs
+node --check bin/pricing-refresh.mjs
 node --check public/app.js
 git diff --check
 ```

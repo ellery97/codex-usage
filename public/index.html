@@ -69,7 +69,7 @@
             <option value="reasoning">推理输出</option>
             <option value="requests">请求数</option>
             <option value="sessions">会话数</option>
-            <option value="cost">预估金额</option>
+            <option value="cost">参考金额</option>
           </select>
         </label>
         <label>
@@ -129,10 +129,15 @@
           <strong id="cacheRatio">--</strong>
           <small id="uncachedInput">-- 未缓存输入</small>
         </article>
-        <article class="metric-card accent-rose">
-          <span>预估金额</span>
+        <article class="metric-card cost-card accent-rose">
+          <span>参考金额（基线）</span>
           <strong id="estimatedCost">--</strong>
-          <small id="costSub">按官方价估算</small>
+          <div class="cost-breakdown" aria-label="金额构成">
+            <span><i>官方金额</i><b id="officialCost">--</b></span>
+            <span id="assumedCostRow"><i>假设增量</i><b id="assumedCost">--</b></span>
+          </div>
+          <small id="costSub" class="cost-footnote">按事件发生时 Standard API 价格估算</small>
+          <small id="pricingWarning" class="pricing-warning" hidden></small>
         </article>
       </section>
 
@@ -159,15 +164,16 @@
           <div class="panel-heading">
             <div>
               <h2>Token 构成</h2>
-              <p>输入 / 输出 / 缓存</p>
+              <p>输入 / 输出 / 缓存读写</p>
             </div>
           </div>
           <canvas id="mixChart" width="260" height="260" data-chart-height="260" aria-label="Token 构成图"></canvas>
           <div class="mix-list">
-            <span><i class="swatch input"></i>输入</span>
-            <span><i class="swatch cached"></i>缓存</span>
-            <span><i class="swatch output"></i>输出</span>
-            <span><i class="swatch reasoning"></i>推理</span>
+            <span><i class="swatch input"></i>普通输入</span>
+            <span><i class="swatch cached"></i>缓存命中</span>
+            <span><i class="swatch cache-write"></i>缓存写入</span>
+            <span><i class="swatch output"></i>普通输出</span>
+            <span><i class="swatch reasoning"></i>推理输出</span>
           </div>
         </article>
       </section>
@@ -185,6 +191,20 @@
             <span>请求数<strong id="requestCount">--</strong></span>
             <span>文件数<strong id="fileCount">--</strong></span>
             <span>全局去重<strong id="globalDedupe">--</strong></span>
+          </div>
+          <div id="assumedBlock" class="model-price-block" hidden>
+            <div class="mini-heading">
+              <strong>假设计价</strong>
+              <span>参考估算，非官方价格</span>
+            </div>
+            <div id="assumedModelList" class="model-price-list assumed-list"></div>
+          </div>
+          <div id="unpricedBlock" class="model-price-block" hidden>
+            <div class="mini-heading">
+              <strong>未计价模型</strong>
+              <span>需要更新价格目录；未知模型不会猜测映射</span>
+            </div>
+            <div id="unpricedModelList" class="model-price-list unpriced-list"></div>
           </div>
         </article>
 
@@ -211,10 +231,12 @@
                   <th>请求</th>
                   <th>总量</th>
                   <th>输入</th>
-                  <th>缓存</th>
+                  <th>缓存命中</th>
+                  <th>缓存写入</th>
                   <th>输出</th>
                   <th>推理</th>
-                  <th>金额</th>
+                  <th>官方金额</th>
+                  <th>参考金额</th>
                   <th>缓存率</th>
                 </tr>
               </thead>
