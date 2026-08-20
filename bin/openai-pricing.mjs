@@ -1,115 +1,176 @@
-const MILLION = 1_000_000;
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  mergePricingCatalogs,
+  normalizeModelForPricing,
+  normalizePricingCatalog,
+  PricingCatalog,
+} from "./pricing-catalog.mjs";
+import {
+  DEFAULT_PRICING_TIMEOUT_MS,
+  readRuntimePricingCache,
+  refreshPricingSnapshot,
+  writeRuntimePricingCache,
+} from "./pricing-refresh.mjs";
 
-export const PRICING_UPDATED_AT = "2026-08-20";
-export const PRICING_CURRENCY = "USD";
-export const PRICING_BASIS = "OpenAI API standard text-token pricing per 1M tokens";
-export const LONG_CONTEXT_THRESHOLD_TOKENS = 272_000;
-export const PRICING_SOURCE_URLS = [
-  "https://developers.openai.com/api/docs/pricing/",
-  "https://developers.openai.com/api/docs/models/gpt-5.6-sol/",
-  "https://developers.openai.com/api/docs/models/gpt-5.6-terra/",
-  "https://developers.openai.com/api/docs/models/gpt-5.6-luna/",
-  "https://developers.openai.com/api/docs/models/gpt-5.5/",
-  "https://developers.openai.com/api/docs/models/gpt-5.4/",
-  "https://developers.openai.com/api/docs/models/gpt-5.4-mini/",
-  "https://developers.openai.com/api/docs/models/gpt-5.3-codex/",
-  "https://developers.openai.com/api/docs/models/gpt-5.2-codex/",
-  "https://developers.openai.com/api/docs/models/gpt-5-codex/",
-  "https://developers.openai.com/api/docs/models/gpt-5.1/",
-  "https://developers.openai.com/api/docs/models/gpt-5.1-codex/",
-  "https://developers.openai.com/api/docs/models/gpt-5.1-codex-max/",
-  "https://developers.openai.com/api/docs/models/gpt-5.1-codex-mini/",
-  "https://developers.openai.com/api/docs/models/gpt-4o/",
-  "https://developers.openai.com/api/docs/models/gpt-4o-mini/",
-];
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, "..");
+export const PRICING_SNAPSHOT_PATH = path.join(ROOT, "pricing", "openai-pricing.snapshot.json");
+export const DEFAULT_PRICING_CACHE_PATH = path.join(ROOT, ".codex-usage", "pricing-history.json");
 
-const MODEL_PRICES = new Map(
-  [
-    ["gpt-5.6", { input: 5, cachedInput: 0.5, output: 30, longContext: { input: 10, cachedInput: 1, output: 45 } }],
-    ["gpt-5.6-sol", { input: 5, cachedInput: 0.5, output: 30, longContext: { input: 10, cachedInput: 1, output: 45 } }],
-    ["gpt-5.6-terra", { input: 2, cachedInput: 0.2, output: 12, longContext: { input: 4, cachedInput: 0.4, output: 18 } }],
-    ["gpt-5.6-luna", { input: 0.2, cachedInput: 0.02, output: 1.2, longContext: { input: 0.4, cachedInput: 0.04, output: 1.8 } }],
-    ["gpt-5.5", { input: 5, cachedInput: 0.5, output: 30, longContext: { input: 10, cachedInput: 1, output: 45 } }],
-    ["gpt-5.4", { input: 2.5, cachedInput: 0.25, output: 15, longContext: { input: 5, cachedInput: 0.5, output: 22.5 } }],
-    ["gpt-5.4-mini", { input: 0.75, cachedInput: 0.075, output: 4.5 }],
-    ["gpt-5.2-codex", { input: 1.75, cachedInput: 0.175, output: 14 }],
-    ["gpt-5.3-codex", { input: 1.75, cachedInput: 0.175, output: 14 }],
-    ["gpt-5.2", { input: 1.75, cachedInput: 0.175, output: 14 }],
-    ["gpt-5.3-chat-latest", { input: 1.75, cachedInput: 0.175, output: 14 }],
-    ["gpt-5-codex", { input: 1.25, cachedInput: 0.125, output: 10 }],
-    ["gpt-5.1-codex-max", { input: 1.25, cachedInput: 0.125, output: 10 }],
-    ["gpt-5.1-codex", { input: 1.25, cachedInput: 0.125, output: 10 }],
-    ["gpt-5.1", { input: 1.25, cachedInput: 0.125, output: 10 }],
-    ["gpt-5", { input: 1.25, cachedInput: 0.125, output: 10 }],
-    ["gpt-5-chat-latest", { input: 1.25, cachedInput: 0.125, output: 10 }],
-    ["gpt-5.1-codex-mini", { input: 0.25, cachedInput: 0.025, output: 2 }],
-    ["gpt-5-mini", { input: 0.25, cachedInput: 0.025, output: 2 }],
-    ["gpt-4o", { input: 2.5, cachedInput: 1.25, output: 10 }],
-    ["gpt-4o-mini", { input: 0.15, cachedInput: 0.075, output: 0.6 }],
-  ].map(([model, rates]) => [model, { model, ...rates }]),
-);
+const BUILT_IN_SNAPSHOT = loadBuiltInSnapshot();
+let catalog = new PricingCatalog(BUILT_IN_SNAPSHOT, {
+  refreshStatus: "cached",
+  usedFallback: false,
+});
+let initializedCachePath = null;
 
-export function normalizeModelForPricing(model) {
-  return String(model || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s*\([^)]*\)\s*$/, "")
-    .replace(/\s+/g, "-");
+export const PRICING_UPDATED_AT = BUILT_IN_SNAPSHOT.checkedAt?.slice(0, 10) || "unknown";
+export const PRICING_CURRENCY = BUILT_IN_SNAPSHOT.currency;
+export const PRICING_BASIS = BUILT_IN_SNAPSHOT.basis;
+export const PRICING_ESTIMATE_LABEL = BUILT_IN_SNAPSHOT.estimateLabel;
+export const PRICING_SOURCE_URLS = BUILT_IN_SNAPSHOT.sourceUrls;
+
+export { normalizeModelForPricing };
+
+export function defaultPricingCachePath(dbPath) {
+  if (process.env.CODEX_USAGE_PRICING_CACHE) {
+    return path.resolve(process.env.CODEX_USAGE_PRICING_CACHE);
+  }
+  return dbPath ? path.join(path.dirname(path.resolve(dbPath)), "pricing-history.json") : DEFAULT_PRICING_CACHE_PATH;
 }
 
-export function priceForModel(model) {
-  const normalized = normalizeModelForPricing(model);
-  return MODEL_PRICES.get(normalized) || null;
+export async function initializePricing({ dbPath, cachePath, preserveCorrupt = true } = {}) {
+  const resolvedCachePath = path.resolve(cachePath || defaultPricingCachePath(dbPath));
+  if (initializedCachePath === resolvedCachePath) return pricingMetadata();
+  const loaded = await readRuntimePricingCache(resolvedCachePath, { preserveCorrupt });
+  const merged = mergePricingCatalogs(BUILT_IN_SNAPSHOT, loaded.snapshot);
+  catalog.replace(merged, {
+    cachePath: resolvedCachePath,
+    refreshStatus: "cached",
+    usedFallback: Boolean(loaded.error),
+    warning: loaded.error
+      ? `Pricing cache was invalid${loaded.corruptBackupPath ? ` and preserved at ${loaded.corruptBackupPath}` : ""}; the built-in catalog is in use.`
+      : null,
+  });
+  initializedCachePath = resolvedCachePath;
+  return pricingMetadata();
 }
 
-export function estimateUsageCostUsd(model, usage) {
-  const price = priceForModel(model);
-  if (!price) {
-    return null;
+export async function refreshPricing({
+  models = [],
+  dbPath,
+  cachePath,
+  timeoutMs = pricingTimeoutMs(),
+  concurrency = 6,
+  force = false,
+  includeCatalogModels = true,
+  checkOnly = false,
+  fetchImpl = globalThis.fetch,
+  now = new Date(),
+  enabled = process.env.CODEX_USAGE_PRICING_REFRESH !== "0",
+} = {}) {
+  await initializePricing({ dbPath, cachePath, preserveCorrupt: !checkOnly });
+  if (!enabled) {
+    catalog.state.refreshStatus = "cached";
+    return { snapshot: catalog.snapshot, changes: [], successes: [], failures: [], ...catalog.state };
   }
 
-  const input = positiveNumber(usage?.input_tokens);
-  const cached = Math.min(input, positiveNumber(usage?.cached_input_tokens));
-  const uncached = Math.max(0, input - cached);
-  const output = positiveNumber(usage?.output_tokens);
-  const rates = price.longContext && input > LONG_CONTEXT_THRESHOLD_TOKENS ? price.longContext : price;
-  const cachedInputRate = Number.isFinite(rates.cachedInput) ? rates.cachedInput : rates.input;
-  return (uncached * rates.input + cached * cachedInputRate + output * rates.output) / MILLION;
+  const previousSnapshot = catalog.snapshot;
+  const result = await refreshPricingSnapshot(catalog.snapshot, {
+    models,
+    fetchImpl,
+    timeoutMs,
+    concurrency,
+    force,
+    includeCatalogModels,
+    now,
+  });
+  if (!checkOnly) {
+    catalog.replace(result.snapshot, {
+      ...catalog.state,
+      refreshStatus: result.refreshStatus,
+      usedFallback: result.usedFallback,
+      warning: result.warning,
+    });
+    if (result.successes.length > 0) {
+      try {
+        const savedSnapshot = await writeRuntimePricingCache(catalog.state.cachePath, catalog.snapshot);
+        catalog.replace(savedSnapshot, catalog.state);
+        result.snapshot = savedSnapshot;
+      } catch (error) {
+        const warning = `Pricing refresh could not update the runtime cache: ${error.message}; the previous validated catalog is in use.`;
+        catalog.replace(previousSnapshot, {
+          ...catalog.state,
+          refreshStatus: "cached",
+          usedFallback: true,
+          warning,
+        });
+        return {
+          ...result,
+          snapshot: previousSnapshot,
+          refreshStatus: "cached",
+          usedFallback: true,
+          warning,
+          writeError: error,
+        };
+      }
+    }
+  }
+  return result;
 }
 
-export function costStatsForUsage(model, usage) {
-  const cost = estimateUsageCostUsd(model, usage);
-  const totalTokens = positiveNumber(usage?.total_tokens) || positiveNumber(usage?.input_tokens) + positiveNumber(usage?.output_tokens);
-  if (cost == null) {
-    return {
-      estimated_cost_usd: 0,
-      priced_requests: 0,
-      unpriced_requests: 1,
-      priced_total_tokens: 0,
-      unpriced_total_tokens: totalTokens,
-    };
-  }
-  return {
-    estimated_cost_usd: cost,
-    priced_requests: 1,
-    unpriced_requests: 0,
-    priced_total_tokens: totalTokens,
-    unpriced_total_tokens: 0,
-  };
+export function knownPricingModels() {
+  return Object.keys(catalog.snapshot.models).sort();
+}
+
+export function priceForModel(model, timestampMs = null) {
+  return catalog.priceForModel(model, timestampMs);
+}
+
+export function estimateUsageCostDetails(model, usage, timestampMs = null) {
+  return catalog.estimateUsageCost(model, usage, timestampMs);
+}
+
+export function estimateUsageCostUsd(model, usage, timestampMs = null) {
+  return estimateUsageCostDetails(model, usage, timestampMs)?.costUsd ?? null;
+}
+
+export function assumedPriceForModel(model, timestampMs = null) {
+  return catalog.assumedPriceForModel(model, timestampMs);
+}
+
+export function estimateAssumedUsageCostUsd(model, usage, timestampMs = null) {
+  return catalog.estimateAssumedUsageCost(model, usage, timestampMs);
+}
+
+export function costStatsForUsage(model, usage, timestampMs = null) {
+  return catalog.costStatsForUsage(model, usage, timestampMs);
 }
 
 export function pricingMetadata() {
-  return {
-    currency: PRICING_CURRENCY,
-    basis: PRICING_BASIS,
-    updatedAt: PRICING_UPDATED_AT,
-    sourceUrls: PRICING_SOURCE_URLS,
-    longContextThresholdTokens: LONG_CONTEXT_THRESHOLD_TOKENS,
-    pricedModels: Array.from(MODEL_PRICES.keys()).sort(),
-  };
+  return catalog.metadata();
 }
 
-function positiveNumber(value) {
-  const n = Number(value || 0);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+export function pricingCatalogSnapshot() {
+  return structuredClone(catalog.snapshot);
+}
+
+function pricingTimeoutMs() {
+  const value = Number(process.env.CODEX_USAGE_PRICING_TIMEOUT_MS || DEFAULT_PRICING_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_PRICING_TIMEOUT_MS;
+}
+
+function loadBuiltInSnapshot() {
+  try {
+    return normalizePricingCatalog(JSON.parse(readFileSync(PRICING_SNAPSHOT_PATH, "utf8")), {
+      source: `built-in pricing catalog ${PRICING_SNAPSHOT_PATH}`,
+    });
+  } catch (error) {
+    throw new Error(`Failed to read pricing catalog at ${PRICING_SNAPSHOT_PATH}: ${error.message}`, {
+      cause: error,
+    });
+  }
 }

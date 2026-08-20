@@ -1,0 +1,564 @@
+{
+  "schemaVersion": 2,
+  "currency": "USD",
+  "basis": "OpenAI API Standard text-token pricing per 1M tokens",
+  "estimateLabel": "Event-time Standard API-equivalent estimate for local Codex token logs",
+  "checkedAt": "2026-08-20T00:00:00.000Z",
+  "updatedAt": "2026-08-20",
+  "sourceUrls": [
+    "https://developers.openai.com/api/docs/models/",
+    "https://openai.com/index/gpt-5-6/",
+    "https://alignment.openai.com/auto-review/"
+  ],
+  "assumptions": [
+    "Each event uses the latest non-superseded Standard API price version effective at its timestamp.",
+    "Provisional versions preserve prices whose authoritative effective date is unavailable.",
+    "Batch, Flex, Fast, regional uplift, taxes, subscriptions, Codex credits, and account discounts are excluded.",
+    "codex-auto-review is excluded from official estimated_cost_usd totals and appears only as a labelled reference estimate."
+  ],
+  "aliases": {
+    "gpt-5.6": "gpt-5.6-sol"
+  },
+  "assumedRoutes": {
+    "codex-auto-review": [
+      {
+        "id": "auto-review-gpt-5.4-2026-04-23",
+        "effectiveFrom": "2026-04-23T00:00:00.000Z",
+        "model": "gpt-5.4",
+        "upperBoundModel": "gpt-5.6-sol",
+        "label": "GPT-5.4 Thinking (low) launch-model reference estimate",
+        "sourceUrl": "https://alignment.openai.com/auto-review/",
+        "evidenceLevel": "official-product-description"
+      },
+      {
+        "id": "auto-review-gpt-5.6-luna-2026-07-30",
+        "effectiveFrom": "2026-07-30T00:00:00.000Z",
+        "model": "gpt-5.6-luna",
+        "upperBoundModel": "gpt-5.6-sol",
+        "label": "GPT-5.6 Luna community-announced routing reference estimate",
+        "sourceUrl": "https://community.openai.com/t/announcing-a-major-price-drop-for-5-6-terra-and-luna-and-fast-mode-for-5-6-sol/1388484",
+        "evidenceLevel": "openai-community-announcement"
+      }
+    ]
+  },
+  "models": {
+    "gpt-5.6-sol": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-sol.md",
+      "versions": [
+        {
+          "id": "gpt-5.6-sol-2026-07-09",
+          "effectiveFrom": "2026-07-09T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "input": 5,
+          "cachedInput": 0.5,
+          "cacheWrite": 6.25,
+          "output": 30,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 10,
+            "cachedInput": 1,
+            "cacheWrite": 12.5,
+            "output": 45
+          },
+          "sourceUrl": "https://openai.com/index/gpt-5-6/",
+          "observedAt": "2026-07-09T00:00:00.000Z",
+          "contentHash": "3b0bf6d7a0e5aec017520f413f60dad757e3086247bcfe9f90a8b3047eabef0f",
+          "evidenceLevel": "official-release"
+        }
+      ]
+    },
+    "gpt-5.6-terra": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-terra.md",
+      "versions": [
+        {
+          "id": "gpt-5.6-terra-2026-07-09",
+          "effectiveFrom": "2026-07-09T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "input": 2.5,
+          "cachedInput": 0.25,
+          "cacheWrite": 3.125,
+          "output": 15,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 5,
+            "cachedInput": 0.5,
+            "cacheWrite": 6.25,
+            "output": 22.5
+          },
+          "sourceUrl": "https://openai.com/index/gpt-5-6/",
+          "observedAt": "2026-07-09T00:00:00.000Z",
+          "contentHash": "9401af917af41d5fa2babba053d71cc6867201759321508e058babcb79e53682",
+          "evidenceLevel": "official-release"
+        },
+        {
+          "id": "gpt-5.6-terra-2026-07-30",
+          "effectiveFrom": "2026-07-30T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "input": 2,
+          "cachedInput": 0.2,
+          "cacheWrite": 2.5,
+          "output": 12,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 4,
+            "cachedInput": 0.4,
+            "cacheWrite": 5,
+            "output": 18
+          },
+          "sourceUrl": "https://openai.com/index/gpt-5-6/",
+          "observedAt": "2026-07-30T00:00:00.000Z",
+          "contentHash": "c11719055840200486dd2483fed5e1e6c347ff3a374d5b439668949428814cc0",
+          "evidenceLevel": "official-price-update"
+        }
+      ]
+    },
+    "gpt-5.6-luna": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-luna.md",
+      "versions": [
+        {
+          "id": "gpt-5.6-luna-2026-07-09",
+          "effectiveFrom": "2026-07-09T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "input": 1,
+          "cachedInput": 0.1,
+          "cacheWrite": 1.25,
+          "output": 6,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 2,
+            "cachedInput": 0.2,
+            "cacheWrite": 2.5,
+            "output": 9
+          },
+          "sourceUrl": "https://openai.com/index/gpt-5-6/",
+          "observedAt": "2026-07-09T00:00:00.000Z",
+          "contentHash": "82ede1aad73531c3b5e8a694fdee654a1d14621c13da42ad4f474727a68acf1a",
+          "evidenceLevel": "official-release"
+        },
+        {
+          "id": "gpt-5.6-luna-2026-07-30",
+          "effectiveFrom": "2026-07-30T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "input": 0.2,
+          "cachedInput": 0.02,
+          "cacheWrite": 0.25,
+          "output": 1.2,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 0.4,
+            "cachedInput": 0.04,
+            "cacheWrite": 0.5,
+            "output": 1.8
+          },
+          "sourceUrl": "https://openai.com/index/gpt-5-6/",
+          "observedAt": "2026-07-30T00:00:00.000Z",
+          "contentHash": "76dd08cec2acc24aedd611a68aaec6a6702d96ffbe75f7218b6cba2e86ebeee6",
+          "evidenceLevel": "official-price-update"
+        }
+      ]
+    },
+    "gpt-5.5": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.5.md",
+      "versions": [
+        {
+          "id": "gpt-5.5-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 5,
+          "cachedInput": 0.5,
+          "output": 30,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 10,
+            "cachedInput": 1,
+            "output": 45
+          },
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.5.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.5-pro": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.5-pro.md",
+      "versions": [
+        {
+          "id": "gpt-5.5-pro-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 30,
+          "output": 180,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 60,
+            "output": 270
+          },
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.5-pro.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.4": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4.md",
+      "versions": [
+        {
+          "id": "gpt-5.4-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 2.5,
+          "cachedInput": 0.25,
+          "output": 15,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 5,
+            "cachedInput": 0.5,
+            "output": 22.5
+          },
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.4-mini": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4-mini.md",
+      "versions": [
+        {
+          "id": "gpt-5.4-mini-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 0.75,
+          "cachedInput": 0.075,
+          "output": 4.5,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4-mini.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.4-nano": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4-nano.md",
+      "versions": [
+        {
+          "id": "gpt-5.4-nano-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 0.2,
+          "cachedInput": 0.02,
+          "output": 1.25,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4-nano.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.4-pro": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4-pro.md",
+      "versions": [
+        {
+          "id": "gpt-5.4-pro-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 30,
+          "output": 180,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 60,
+            "output": 270
+          },
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4-pro.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.3-codex": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.3-codex.md",
+      "versions": [
+        {
+          "id": "gpt-5.3-codex-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.75,
+          "cachedInput": 0.175,
+          "output": 14,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.3-codex.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.3-chat-latest": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.3-chat-latest.md",
+      "versions": [
+        {
+          "id": "gpt-5.3-chat-latest-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.75,
+          "cachedInput": 0.175,
+          "output": 14,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.3-chat-latest.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.2": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.2.md",
+      "versions": [
+        {
+          "id": "gpt-5.2-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.75,
+          "cachedInput": 0.175,
+          "output": 14,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.2.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.2-codex": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.2-codex.md",
+      "versions": [
+        {
+          "id": "gpt-5.2-codex-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.75,
+          "cachedInput": 0.175,
+          "output": 14,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.2-codex.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.1-codex-max": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1-codex-max.md",
+      "versions": [
+        {
+          "id": "gpt-5.1-codex-max-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.25,
+          "cachedInput": 0.125,
+          "output": 10,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1-codex-max.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.1-codex": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1-codex.md",
+      "versions": [
+        {
+          "id": "gpt-5.1-codex-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.25,
+          "cachedInput": 0.125,
+          "output": 10,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1-codex.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5-codex": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5-codex.md",
+      "versions": [
+        {
+          "id": "gpt-5-codex-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.25,
+          "cachedInput": 0.125,
+          "output": 10,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5-codex.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.1": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1.md",
+      "versions": [
+        {
+          "id": "gpt-5.1-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.25,
+          "cachedInput": 0.125,
+          "output": 10,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.md",
+      "versions": [
+        {
+          "id": "gpt-5-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.25,
+          "cachedInput": 0.125,
+          "output": 10,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5-chat-latest": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5-chat-latest.md",
+      "versions": [
+        {
+          "id": "gpt-5-chat-latest-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 1.25,
+          "cachedInput": 0.125,
+          "output": 10,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5-chat-latest.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5.1-codex-mini": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1-codex-mini.md",
+      "versions": [
+        {
+          "id": "gpt-5.1-codex-mini-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 0.25,
+          "cachedInput": 0.025,
+          "output": 2,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.1-codex-mini.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-5-mini": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5-mini.md",
+      "versions": [
+        {
+          "id": "gpt-5-mini-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 0.25,
+          "cachedInput": 0.025,
+          "output": 2,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5-mini.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "chat-latest": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/chat-latest.md",
+      "versions": [
+        {
+          "id": "chat-latest-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 5,
+          "cachedInput": 0.5,
+          "output": 30,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/chat-latest.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-4o": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-4o.md",
+      "versions": [
+        {
+          "id": "gpt-4o-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 2.5,
+          "cachedInput": 1.25,
+          "output": 10,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-4o.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-4o-mini": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-4o-mini.md",
+      "versions": [
+        {
+          "id": "gpt-4o-mini-legacy",
+          "effectiveFrom": null,
+          "provisional": true,
+          "serviceTier": "standard",
+          "input": 0.15,
+          "cachedInput": 0.075,
+          "output": 0.6,
+          "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-4o-mini.md",
+          "observedAt": "2026-08-19T00:00:00.000Z",
+          "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
+          "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    }
+  }
+}

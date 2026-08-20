@@ -16,7 +16,13 @@ import {
   parseArgs,
   scanSessionFile,
 } from "./codex-token-usage.mjs";
-import { estimateUsageCostUsd, pricingMetadata } from "./openai-pricing.mjs";
+import {
+  costStatsForUsage,
+  initializePricing,
+  pricingMetadata,
+  refreshPricing,
+} from "./openai-pricing.mjs";
+import { assumedModelsFromAggregatedRows } from "./usage-costs.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +47,20 @@ const RANGE_TO_LAST = new Map([
   ["30d", "30d"],
   ["12w", "12w"],
 ]);
+
+const COST_AGGREGATE_COLUMNS = `
+  COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS estimated_cost_usd,
+  COALESCE(SUM(COALESCE(assumed_cost_usd, 0)), 0) AS assumed_cost_usd,
+  COALESCE(SUM(COALESCE(assumed_upper_bound_cost_usd, 0)), 0) AS assumed_upper_bound_cost_usd,
+  COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS priced_requests,
+  COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL AND assumed_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS assumed_requests,
+  COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL AND assumed_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_requests,
+  COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN total_tokens ELSE 0 END), 0) AS priced_total_tokens,
+  COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL AND assumed_cost_usd IS NOT NULL THEN total_tokens ELSE 0 END), 0) AS assumed_total_tokens,
+  COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL AND assumed_cost_usd IS NULL THEN total_tokens ELSE 0 END), 0) AS unpriced_total_tokens,
+  COALESCE(SUM(provisional_priced_requests), 0) AS provisional_priced_requests,
+  COALESCE(SUM(provisional_priced_total_tokens), 0) AS provisional_priced_total_tokens,
+  COALESCE(SUM(provisional_estimated_cost_usd), 0) AS provisional_estimated_cost_usd`;
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -187,6 +207,7 @@ async function openUsageIndex() {
       model TEXT NOT NULL,
       input_tokens INTEGER NOT NULL,
       cached_input_tokens INTEGER NOT NULL,
+      cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL,
       reasoning_output_tokens INTEGER NOT NULL,
       total_tokens INTEGER NOT NULL
@@ -199,18 +220,44 @@ async function openUsageIndex() {
     CREATE INDEX IF NOT EXISTS idx_events_cwd ON events(cwd);
     CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
   `);
+  migratePricingColumns(db);
   db.function("codex_date_key", (timestampMs, group, timezone) => {
     if (timestampMs == null) return null;
     return formatDateKey(Number(timestampMs), String(group), String(timezone));
   });
-  db.function("codex_estimated_cost_usd", (model, inputTokens, cachedInputTokens, outputTokens, totalTokens) => {
-    return estimateUsageCostUsd(String(model || ""), {
-      input_tokens: Number(inputTokens || 0),
-      cached_input_tokens: Number(cachedInputTokens || 0),
-      output_tokens: Number(outputTokens || 0),
-      total_tokens: Number(totalTokens || 0),
-    });
-  });
+  db.function(
+    "codex_cost_stats_json",
+    (timestampMs, model, inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, totalTokens) => {
+      const stats = costStatsForUsage(
+        String(model || ""),
+        {
+          input_tokens: Number(inputTokens || 0),
+          cached_input_tokens: Number(cachedInputTokens || 0),
+          cache_write_input_tokens: Number(cacheWriteInputTokens || 0),
+          output_tokens: Number(outputTokens || 0),
+          total_tokens: Number(totalTokens || 0),
+        },
+        timestampMs == null ? null : Number(timestampMs),
+      );
+      return JSON.stringify({
+        estimated_cost_usd: stats.priced_requests ? stats.estimated_cost_usd : null,
+        assumed_cost_usd: stats.assumed_requests ? stats.assumed_cost_usd : null,
+        assumed_upper_bound_cost_usd: stats.assumed_requests
+          ? stats.assumed_upper_bound_cost_usd
+          : null,
+        provisional_priced_requests: stats.provisional_priced_requests,
+        provisional_priced_total_tokens: stats.provisional_priced_total_tokens,
+        provisional_estimated_cost_usd: stats.provisional_estimated_cost_usd,
+        assumed_route_id: stats.assumedRoute?.routeId || null,
+        assumed_model: stats.assumedRoute?.assumedModel || null,
+        assumed_upper_bound_model: stats.assumedRoute?.upperBoundModel || null,
+        assumed_label: stats.assumedRoute?.label || null,
+        assumed_source_url: stats.assumedRoute?.sourceUrl || null,
+        assumed_evidence_level: stats.assumedRoute?.evidenceLevel || null,
+        assumed_effective_from: stats.assumedRoute?.effectiveFrom || null,
+      });
+    },
+  );
 
   return {
     db,
@@ -230,8 +277,8 @@ async function openUsageIndex() {
       insertEvent: db.prepare(`
         INSERT INTO events (
           file_path, event_index, timestamp_ms, session_created_at_ms, session_id, total_usage_key, cwd, model,
-          input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       fileStats: db.prepare(`
         SELECT
@@ -248,6 +295,21 @@ async function openUsageIndex() {
       `),
     },
   };
+}
+
+function migratePricingColumns(db) {
+  const eventColumns = new Set(db.prepare("PRAGMA table_info(events)").all().map((row) => row.name));
+  if (eventColumns.has("cache_write_input_tokens")) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec("ALTER TABLE events ADD COLUMN cache_write_input_tokens INTEGER NOT NULL DEFAULT 0");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw new Error(`Failed to migrate pricing columns in ${DB_PATH}: ${error.message}`, {
+      cause: error,
+    });
+  }
 }
 
 function sessionsKey(sessionsDirs) {
@@ -302,6 +364,13 @@ function globalDupesForSessions(index, sessionsDirs) {
     `)
     .get(...filter.params);
   return Number(row.globalDuplicateTokenEvents || 0);
+}
+
+function modelsInUsageIndex(index) {
+  return index.db
+    .prepare("SELECT DISTINCT model FROM events WHERE model NOT IN ('', '(unknown model)') ORDER BY model")
+    .all()
+    .map((row) => String(row.model));
 }
 
 async function collectJsonlFiles(sessionsDirs) {
@@ -427,6 +496,7 @@ function writeScannedFile(index, fileInfo, scanned) {
         event.model || "(unknown model)",
         usage.input_tokens || 0,
         usage.cached_input_tokens || 0,
+        usage.cache_write_input_tokens || 0,
         usage.output_tokens || 0,
         usage.reasoning_output_tokens || 0,
         usage.total_tokens || 0,
@@ -481,134 +551,170 @@ function sourceCte(options) {
 }
 
 function usagePayloadFromIndex(index, syncStats, options) {
-  const { sql: cte, params } = sourceCte(options);
-  const costedCte = `${cte},
-      costed AS (
+  try {
+    materializeCostedEvents(index, options);
+    const totals = index.db
+      .prepare(`
         SELECT
-          filtered.*,
-          codex_estimated_cost_usd(model, input_tokens, cached_input_tokens, output_tokens, total_tokens) AS estimated_cost_usd
-        FROM filtered
-      )`;
-  const totals = index.db
-    .prepare(`${costedCte}
-      SELECT
-        COUNT(DISTINCT session_id) AS sessions,
-        COUNT(*) AS requests,
-        COALESCE(SUM(input_tokens), 0) AS input_tokens,
-        COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
-        COALESCE(SUM(output_tokens), 0) AS output_tokens,
-        COALESCE(SUM(reasoning_output_tokens), 0) AS reasoning_output_tokens,
-        COALESCE(SUM(total_tokens), 0) AS total_tokens,
-        COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS estimated_cost_usd,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS priced_requests,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_requests,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN total_tokens ELSE 0 END), 0) AS priced_total_tokens,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN total_tokens ELSE 0 END), 0) AS unpriced_total_tokens
-      FROM costed
-    `)
-    .get(...params);
+          COUNT(DISTINCT session_id) AS sessions,
+          COUNT(*) AS requests,
+          COALESCE(SUM(input_tokens), 0) AS input_tokens,
+          COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+          COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
+          COALESCE(SUM(output_tokens), 0) AS output_tokens,
+          COALESCE(SUM(reasoning_output_tokens), 0) AS reasoning_output_tokens,
+          COALESCE(SUM(total_tokens), 0) AS total_tokens,
+          ${COST_AGGREGATE_COLUMNS}
+        FROM request_costed_events
+      `)
+      .get();
 
-  const rows = groupedRowsFromIndex(index, costedCte, params, options);
-  rows.sort((a, b) => compareRows(a, b, options));
-  const rowCount = rows.length;
-  const limitedRows = options.limit > 0 ? rows.slice(0, options.limit) : rows;
-  const globalDupes =
-    options.dedupeScope === "global"
-      ? globalDupesForSessions(index, options.sessionsDirs)
-      : 0;
+    const rows = groupedRowsFromIndex(index, options);
+    rows.sort((a, b) => compareRows(a, b, options));
+    const rowCount = rows.length;
+    const limitedRows = options.limit > 0 ? rows.slice(0, options.limit) : rows;
+    const globalDupes =
+      options.dedupeScope === "global"
+        ? globalDupesForSessions(index, options.sessionsDirs)
+        : 0;
 
-  return {
-    source: options.sessionsDirs,
-    range: {
-      from: options.fromMs == null ? null : new Date(options.fromMs).toISOString(),
-      to: options.toMs == null ? null : new Date(options.toMs).toISOString(),
-    },
-    timezone: options.timezone,
-    group: options.group,
-    sort: options.sort,
-    desc: options.desc,
-    sourceScope: options.sourceScope || "all",
-    dedupeScope: options.dedupeScope,
-    totals: {
-      sessions: Number(totals.sessions || 0),
-      requests: Number(totals.requests || 0),
-      ...withDerivedUsage(totals),
-    },
-    rows: limitedRows,
-    rowCount,
-    stats: {
-      files: syncStats.files,
-      filesWithUsage: syncStats.filesWithUsage,
-      duplicateTokenEvents: syncStats.duplicateTokenEvents,
-      parseErrors: syncStats.parseErrors,
-      rawTokenEvents: syncStats.rawTokenEvents,
-      globalDuplicateTokenEvents: globalDupes,
-      changedFiles: syncStats.changedFiles,
-      deletedFiles: syncStats.deletedFiles,
-      cacheFiles: syncStats.cacheFiles,
-      scanDurationMs: syncStats.scanDurationMs,
-      indexPath: syncStats.indexPath,
-    },
-    pricing: pricingMetadata(),
-  };
+    return {
+      source: options.sessionsDirs,
+      range: {
+        from: options.fromMs == null ? null : new Date(options.fromMs).toISOString(),
+        to: options.toMs == null ? null : new Date(options.toMs).toISOString(),
+      },
+      timezone: options.timezone,
+      group: options.group,
+      sort: options.sort,
+      desc: options.desc,
+      sourceScope: options.sourceScope || "all",
+      dedupeScope: options.dedupeScope,
+      totals: {
+        sessions: Number(totals.sessions || 0),
+        requests: Number(totals.requests || 0),
+        ...withDerivedUsage(totals),
+      },
+      rows: limitedRows,
+      rowCount,
+      assumedModels: assumedModelsFromIndex(index),
+      unpricedModels: unpricedModelsFromIndex(index),
+      stats: {
+        files: syncStats.files,
+        filesWithUsage: syncStats.filesWithUsage,
+        duplicateTokenEvents: syncStats.duplicateTokenEvents,
+        parseErrors: syncStats.parseErrors,
+        rawTokenEvents: syncStats.rawTokenEvents,
+        globalDuplicateTokenEvents: globalDupes,
+        changedFiles: syncStats.changedFiles,
+        deletedFiles: syncStats.deletedFiles,
+        cacheFiles: syncStats.cacheFiles,
+        scanDurationMs: syncStats.scanDurationMs,
+        indexPath: syncStats.indexPath,
+      },
+      pricing: pricingMetadata(),
+    };
+  } finally {
+    index.db.exec("DROP TABLE IF EXISTS temp.request_costed_events");
+  }
 }
 
-function groupedRowsFromIndex(index, cte, params, options) {
+function materializeCostedEvents(index, options) {
+  index.db.exec("DROP TABLE IF EXISTS temp.request_costed_events");
+  const { sql: cte, params } = sourceCte(options);
+  index.db
+    .prepare(`
+      CREATE TEMP TABLE request_costed_events AS
+      ${cte},
+      priced AS MATERIALIZED (
+        SELECT
+          filtered.*,
+          codex_cost_stats_json(
+            timestamp_ms, model, input_tokens, cached_input_tokens,
+            cache_write_input_tokens, output_tokens, total_tokens
+          ) AS cost_json
+        FROM filtered
+      )
+      SELECT
+        timestamp_ms,
+        session_created_at_ms,
+        session_id,
+        cwd,
+        model,
+        input_tokens,
+        cached_input_tokens,
+        cache_write_input_tokens,
+        output_tokens,
+        reasoning_output_tokens,
+        total_tokens,
+        json_extract(cost_json, '$.estimated_cost_usd') AS estimated_cost_usd,
+        json_extract(cost_json, '$.assumed_cost_usd') AS assumed_cost_usd,
+        json_extract(cost_json, '$.assumed_upper_bound_cost_usd') AS assumed_upper_bound_cost_usd,
+        COALESCE(json_extract(cost_json, '$.provisional_priced_requests'), 0) AS provisional_priced_requests,
+        COALESCE(json_extract(cost_json, '$.provisional_priced_total_tokens'), 0) AS provisional_priced_total_tokens,
+        COALESCE(json_extract(cost_json, '$.provisional_estimated_cost_usd'), 0) AS provisional_estimated_cost_usd,
+        json_extract(cost_json, '$.assumed_route_id') AS assumed_route_id,
+        json_extract(cost_json, '$.assumed_model') AS assumed_model,
+        json_extract(cost_json, '$.assumed_upper_bound_model') AS assumed_upper_bound_model,
+        json_extract(cost_json, '$.assumed_label') AS assumed_label,
+        json_extract(cost_json, '$.assumed_source_url') AS assumed_source_url,
+        json_extract(cost_json, '$.assumed_evidence_level') AS assumed_evidence_level,
+        json_extract(cost_json, '$.assumed_effective_from') AS assumed_effective_from
+      FROM priced
+    `)
+    .run(...params);
+}
+
+function groupedRowsFromIndex(index, options) {
   if (options.group === "none") {
     return [];
   }
 
   if (options.group === "day" || options.group === "month") {
     return index.db
-      .prepare(`${cte}
+      .prepare(`
         SELECT
           codex_date_key(timestamp_ms, ?, ?) AS key,
           COUNT(DISTINCT session_id) AS sessions,
           COUNT(*) AS requests,
           COALESCE(SUM(input_tokens), 0) AS input_tokens,
           COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+          COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
           COALESCE(SUM(output_tokens), 0) AS output_tokens,
           COALESCE(SUM(reasoning_output_tokens), 0) AS reasoning_output_tokens,
           COALESCE(SUM(total_tokens), 0) AS total_tokens,
-          COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS estimated_cost_usd,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS priced_requests,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_requests,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN total_tokens ELSE 0 END), 0) AS priced_total_tokens,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN total_tokens ELSE 0 END), 0) AS unpriced_total_tokens
-        FROM costed
+          ${COST_AGGREGATE_COLUMNS}
+        FROM request_costed_events
         GROUP BY key
       `)
-      .all(...params, options.group, options.timezone)
+      .all(options.group, options.timezone)
       .map(rowFromSql);
   }
 
   if (options.group === "model" || options.group === "cwd") {
     const field = options.group === "model" ? "model" : "cwd";
     return index.db
-      .prepare(`${cte}
+      .prepare(`
         SELECT
           ${field} AS key,
           COUNT(DISTINCT session_id) AS sessions,
           COUNT(*) AS requests,
           COALESCE(SUM(input_tokens), 0) AS input_tokens,
           COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+          COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
           COALESCE(SUM(output_tokens), 0) AS output_tokens,
           COALESCE(SUM(reasoning_output_tokens), 0) AS reasoning_output_tokens,
           COALESCE(SUM(total_tokens), 0) AS total_tokens,
-          COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS estimated_cost_usd,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS priced_requests,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_requests,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN total_tokens ELSE 0 END), 0) AS priced_total_tokens,
-          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN total_tokens ELSE 0 END), 0) AS unpriced_total_tokens
-        FROM costed
+          ${COST_AGGREGATE_COLUMNS}
+        FROM request_costed_events
         GROUP BY key
       `)
-      .all(...params)
+      .all()
       .map(rowFromSql);
   }
 
   return index.db
-    .prepare(`${cte}
+    .prepare(`
       SELECT
         session_id,
         MIN(COALESCE(session_created_at_ms, timestamp_ms)) AS key_ms,
@@ -616,24 +722,81 @@ function groupedRowsFromIndex(index, cte, params, options) {
         COUNT(*) AS requests,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+        COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(reasoning_output_tokens), 0) AS reasoning_output_tokens,
         COALESCE(SUM(total_tokens), 0) AS total_tokens,
-        COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS estimated_cost_usd,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS priced_requests,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_requests,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN total_tokens ELSE 0 END), 0) AS priced_total_tokens,
-        COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN total_tokens ELSE 0 END), 0) AS unpriced_total_tokens
-      FROM costed
+        ${COST_AGGREGATE_COLUMNS}
+      FROM request_costed_events
       GROUP BY session_id
     `)
-    .all(...params)
+    .all()
     .map((row) =>
       rowFromSql({
         ...row,
         key: `${formatDateTime(Number(row.key_ms || 0), options.timezone)} ${row.session_id}`,
       }),
     );
+}
+
+function unpricedModelsFromIndex(index) {
+  return index.db
+    .prepare(`
+      SELECT
+        model,
+        COUNT(*) AS requests,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        MIN(timestamp_ms) AS first_seen_ms,
+        MAX(timestamp_ms) AS last_seen_ms
+      FROM request_costed_events
+      WHERE estimated_cost_usd IS NULL AND assumed_cost_usd IS NULL
+      GROUP BY model
+      ORDER BY total_tokens DESC, requests DESC, model ASC
+      LIMIT 100
+    `)
+    .all()
+    .map((row) => ({
+      model: String(row.model || "(unknown model)"),
+      requests: Number(row.requests || 0),
+      input_tokens: Number(row.input_tokens || 0),
+      output_tokens: Number(row.output_tokens || 0),
+      total_tokens: Number(row.total_tokens || 0),
+      first_seen: row.first_seen_ms == null ? null : new Date(Number(row.first_seen_ms)).toISOString(),
+      last_seen: row.last_seen_ms == null ? null : new Date(Number(row.last_seen_ms)).toISOString(),
+    }));
+}
+
+function assumedModelsFromIndex(index) {
+  const rows = index.db
+    .prepare(`
+      SELECT
+        model,
+        assumed_route_id,
+        assumed_model,
+        assumed_upper_bound_model,
+        assumed_label,
+        assumed_source_url,
+        assumed_evidence_level,
+        assumed_effective_from,
+        COUNT(*) AS requests,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        COALESCE(SUM(assumed_cost_usd), 0) AS assumed_cost_usd,
+        COALESCE(SUM(assumed_upper_bound_cost_usd), 0) AS assumed_upper_bound_cost_usd,
+        MIN(timestamp_ms) AS first_seen_ms,
+        MAX(timestamp_ms) AS last_seen_ms
+      FROM request_costed_events
+      WHERE estimated_cost_usd IS NULL AND assumed_cost_usd IS NOT NULL
+      GROUP BY
+        model, assumed_route_id, assumed_model, assumed_upper_bound_model,
+        assumed_label, assumed_source_url, assumed_evidence_level, assumed_effective_from
+      ORDER BY model ASC, assumed_effective_from ASC
+    `)
+    .all();
+  return assumedModelsFromAggregatedRows(rows).slice(0, 100);
 }
 
 function rowFromSql(row) {
@@ -648,19 +811,32 @@ function rowFromSql(row) {
 function withDerivedUsage(row) {
   const input = Number(row.input_tokens || 0);
   const cached = Number(row.cached_input_tokens || 0);
+  const cacheWrite = Number(row.cache_write_input_tokens || 0);
   return {
     input_tokens: input,
     cached_input_tokens: cached,
+    cache_write_input_tokens: cacheWrite,
     output_tokens: Number(row.output_tokens || 0),
     reasoning_output_tokens: Number(row.reasoning_output_tokens || 0),
     total_tokens: Number(row.total_tokens || 0),
-    uncached_input_tokens: Math.max(0, input - cached),
+    uncached_input_tokens: Math.max(0, input - cached - cacheWrite),
     cache_hit_ratio: input > 0 ? cached / input : 0,
     estimated_cost_usd: Number(row.estimated_cost_usd || 0),
+    assumed_cost_usd: Number(row.assumed_cost_usd || 0),
+    assumed_upper_bound_cost_usd: Number(row.assumed_upper_bound_cost_usd || 0),
+    reference_total_cost_usd:
+      Number(row.estimated_cost_usd || 0) + Number(row.assumed_cost_usd || 0),
+    reference_total_upper_bound_cost_usd:
+      Number(row.estimated_cost_usd || 0) + Number(row.assumed_upper_bound_cost_usd || 0),
     priced_requests: Number(row.priced_requests || 0),
+    assumed_requests: Number(row.assumed_requests || 0),
     unpriced_requests: Number(row.unpriced_requests || 0),
     priced_total_tokens: Number(row.priced_total_tokens || 0),
+    assumed_total_tokens: Number(row.assumed_total_tokens || 0),
     unpriced_total_tokens: Number(row.unpriced_total_tokens || 0),
+    provisional_priced_requests: Number(row.provisional_priced_requests || 0),
+    provisional_priced_total_tokens: Number(row.provisional_priced_total_tokens || 0),
+    provisional_estimated_cost_usd: Number(row.provisional_estimated_cost_usd || 0),
   };
 }
 
@@ -673,7 +849,7 @@ function sortValue(row, sort) {
   if (sort === "reasoning") return row.reasoning_output_tokens;
   if (sort === "requests") return row.requests;
   if (sort === "sessions") return row.sessions;
-  if (sort === "cost") return row.estimated_cost_usd;
+  if (sort === "cost") return row.reference_total_cost_usd;
   return row.key;
 }
 
@@ -722,6 +898,14 @@ async function serveStatic(req, res, pathname) {
 }
 
 const usageIndex = await openUsageIndex();
+await initializePricing({ dbPath: DB_PATH });
+const pricingRefresh = await refreshPricing({
+  models: modelsInUsageIndex(usageIndex),
+  dbPath: DB_PATH,
+});
+if (pricingRefresh.warning) {
+  console.warn(`codex-usage-server: ${pricingRefresh.warning}`);
+}
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
