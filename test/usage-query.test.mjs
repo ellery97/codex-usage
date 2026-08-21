@@ -17,17 +17,17 @@ test("API defaults to index refresh while refreshIndex=0 uses registered source 
     },
   };
   const sourceRegistry = {
-    all: ["/cached/all"],
-    local: ["/cached/local"],
-    windows: ["/cached/windows"],
+    all: [path.resolve("/cached/all")],
+    local: [path.resolve("/cached/local")],
+    windows: [path.resolve("/cached/windows")],
   };
 
   await runUsage(queryService, new URLSearchParams({ refreshIndex: "0" }), sourceRegistry);
   await runUsage(queryService, new URLSearchParams({ sourceScope: "windows" }), sourceRegistry);
   assert.equal(calls[0].queryPolicy.refreshIndex, false);
-  assert.deepEqual(calls[0].queryOptions.sessionsDirs, ["/cached/all"]);
+  assert.deepEqual(calls[0].queryOptions.sessionsDirs, sourceRegistry.all);
   assert.equal(calls[1].queryPolicy.refreshIndex, true);
-  assert.deepEqual(calls[1].queryOptions.sessionsDirs, ["/cached/windows"]);
+  assert.deepEqual(calls[1].queryOptions.sessionsDirs, sourceRegistry.windows);
 });
 
 test("rolling web ranges reuse one minute bucket and expire at the next minute", async (t) => {
