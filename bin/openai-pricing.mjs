@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  contentHash,
   mergePricingCatalogs,
   normalizeModelForPricing,
   normalizePricingCatalog,
@@ -156,6 +157,16 @@ export function pricingMetadata() {
 
 export function pricingCatalogSnapshot() {
   return structuredClone(catalog.snapshot);
+}
+
+export function pricingCatalogVersion() {
+  return contentHash(
+    JSON.stringify({
+      aliases: catalog.snapshot.aliases,
+      models: catalog.snapshot.models,
+      assumedRoutes: catalog.snapshot.assumedRoutes,
+    }),
+  );
 }
 
 function pricingTimeoutMs() {

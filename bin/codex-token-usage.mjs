@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
   costStatsForUsage,
@@ -12,6 +11,12 @@ import {
   pricingMetadata,
   refreshPricing,
 } from "./openai-pricing.mjs";
+import {
+  scanSessionFile,
+  scanSessionFileRange,
+  SESSION_SCANNER_VERSION,
+} from "./session-scanner.mjs";
+import { addUsage, usageZero } from "./usage-values.mjs";
 import {
   addAssumedModel,
   addCostStats,
@@ -21,14 +26,12 @@ import {
   unpricedModelsFromMap,
 } from "./usage-costs.mjs";
 
-const USAGE_FIELDS = [
-  "input_tokens",
-  "cached_input_tokens",
-  "cache_write_input_tokens",
-  "output_tokens",
-  "reasoning_output_tokens",
-  "total_tokens",
-];
+export { scanSessionFile, scanSessionFileRange, SESSION_SCANNER_VERSION };
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, "..");
+const DEFAULT_DB_PATH = path.join(ROOT, ".codex-usage", "cache.sqlite");
 
 const DATE_GROUPS = new Set(["day", "month"]);
 const GROUPS = new Set(["none", "day", "month", "model", "cwd", "session"]);
@@ -55,52 +58,6 @@ export const DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR = path.join(
 );
 const SESSION_DIR_SEPARATOR = ":";
 const SKIP_WINDOWS_USER_DIRS = new Set(["All Users", "Default", "Default User", "Public"]);
-
-function usageZero() {
-  return {
-    input_tokens: 0,
-    cached_input_tokens: 0,
-    cache_write_input_tokens: 0,
-    output_tokens: 0,
-    reasoning_output_tokens: 0,
-    total_tokens: 0,
-  };
-}
-
-function normalizeUsage(value) {
-  const usage = usageZero();
-  if (!value || typeof value !== "object") {
-    return usage;
-  }
-  for (const field of USAGE_FIELDS) {
-    const n = Number(value[field] ?? 0);
-    usage[field] = Number.isFinite(n) ? n : 0;
-  }
-  return usage;
-}
-
-function addUsage(target, source) {
-  for (const field of USAGE_FIELDS) {
-    target[field] += source[field] || 0;
-  }
-  return target;
-}
-
-function diffUsage(next, prev) {
-  const usage = usageZero();
-  for (const field of USAGE_FIELDS) {
-    usage[field] = Math.max(0, (next[field] || 0) - (prev[field] || 0));
-  }
-  return usage;
-}
-
-function usageKey(usage) {
-  return USAGE_FIELDS.map((field) => usage[field] || 0).join(":");
-}
-
-function hasUsage(usage) {
-  return USAGE_FIELDS.some((field) => (usage[field] || 0) > 0);
-}
 
 function expandHome(inputPath) {
   if (!inputPath) {
@@ -222,6 +179,8 @@ export function parseArgs(argv) {
     limit: 0,
     dedupeScope: "global",
     timezone: defaultTimezone(),
+    useCache: false,
+    cacheDbPath: path.resolve(process.env.CODEX_USAGE_DB || DEFAULT_DB_PATH),
     json: false,
     csv: false,
     help: false,
@@ -281,6 +240,11 @@ export function parseArgs(argv) {
       }
     } else if (arg === "--timezone" || arg === "--tz") {
       options.timezone = next();
+    } else if (arg === "--use-cache") {
+      options.useCache = true;
+    } else if (arg === "--cache-db") {
+      options.cacheDbPath = path.resolve(expandHome(next()));
+      options.useCache = true;
     } else if (arg === "--json") {
       options.json = true;
     } else if (arg === "--csv") {
@@ -327,6 +291,8 @@ Options:
   --limit N               Limit grouped rows. 0 means no limit
   --dedupe-scope VALUE    file or global. Default: global
   --timezone TZ           Timezone for day/month labels. Default: local timezone
+  --use-cache             Use the SQLite index also used by the Web dashboard
+  --cache-db PATH         SQLite index path. Implies --use-cache. Default: .codex-usage/cache.sqlite
   --json                  Emit machine-readable JSON
   --csv                   Emit grouped rows as CSV
   --no-refresh-pricing    Use the last validated local price catalog without network refresh
@@ -335,6 +301,7 @@ Options:
 Notes:
   - The tool reads local Codex JSONL session files and aggregates event_msg.token_count.
   - CODEX_USAGE_SESSIONS can provide multiple sessions directories separated by ":".
+  - --use-cache stores a local SQLite index, tails safe appends, and fully rescans rewritten files.
   - Duplicate token_count lines with the same cumulative total are skipped.
   - Global dedupe also skips copied historical token_count events embedded in later rollouts.
   - estimated_cost_usd contains only models with published prices; reference totals additionally include explicitly labelled model assumptions.
@@ -369,114 +336,6 @@ export async function findJsonlFiles(root) {
 
   await walk(root);
   return files;
-}
-
-function sessionIdFromPath(filePath) {
-  const base = path.basename(filePath, ".jsonl");
-  const match = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(base);
-  return match ? match[1] : base;
-}
-
-export async function scanSessionFile(filePath) {
-  const events = [];
-  const seenTotals = new Set();
-  const stats = {
-    duplicateTokenEvents: 0,
-    parseErrors: 0,
-    tokenEvents: 0,
-  };
-
-  const session = {
-    id: sessionIdFromPath(filePath),
-    file: filePath,
-    cwd: "",
-    model: "",
-    createdAtMs: null,
-  };
-
-  let context = { cwd: "", model: "" };
-  let lastTotalUsage = usageZero();
-  let sawPrimarySessionMeta = false;
-
-  const rl = readline.createInterface({
-    input: createReadStream(filePath, { encoding: "utf8" }),
-    crlfDelay: Infinity,
-  });
-
-  for await (const line of rl) {
-    if (
-      !line.includes('"token_count"') &&
-      !line.includes('"turn_context"') &&
-      !line.includes('"session_meta"')
-    ) {
-      continue;
-    }
-
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      stats.parseErrors += 1;
-      continue;
-    }
-
-    if (obj.type === "session_meta" && obj.payload) {
-      if (!sawPrimarySessionMeta) {
-        session.id = obj.payload.id || session.id;
-        session.cwd = obj.payload.cwd || session.cwd;
-        const created = Date.parse(obj.payload.timestamp || obj.timestamp || "");
-        if (!Number.isNaN(created)) {
-          session.createdAtMs = created;
-        }
-        sawPrimarySessionMeta = true;
-      }
-      continue;
-    }
-
-    if (obj.type === "turn_context" && obj.payload) {
-      context = {
-        cwd: obj.payload.cwd || context.cwd || session.cwd,
-        model: obj.payload.model || context.model || session.model,
-      };
-      session.cwd = context.cwd || session.cwd;
-      session.model = context.model || session.model;
-      continue;
-    }
-
-    if (obj.type !== "event_msg" || obj.payload?.type !== "token_count") {
-      continue;
-    }
-
-    stats.tokenEvents += 1;
-    const info = obj.payload.info || {};
-    const totalUsage = normalizeUsage(info.total_token_usage);
-    const totalKey = usageKey(totalUsage);
-    if (seenTotals.has(totalKey)) {
-      stats.duplicateTokenEvents += 1;
-      continue;
-    }
-    seenTotals.add(totalKey);
-
-    let usage = normalizeUsage(info.last_token_usage);
-    if (!hasUsage(usage)) {
-      usage = diffUsage(totalUsage, lastTotalUsage);
-    }
-    lastTotalUsage = totalUsage;
-
-    const timestampMs = Date.parse(obj.timestamp || "");
-    events.push({
-      timestampMs: Number.isNaN(timestampMs) ? session.createdAtMs : timestampMs,
-      sessionCreatedAtMs: session.createdAtMs,
-      sessionId: session.id,
-      totalUsageKey: totalKey,
-      file: filePath,
-      cwd: context.cwd || session.cwd || "(unknown cwd)",
-      model: context.model || session.model || "(unknown model)",
-      usage,
-    });
-  }
-
-  return { session, events, stats };
 }
 
 export function inRange(event, options) {
@@ -881,6 +740,10 @@ function textOutput(result, options, scanStats) {
 }
 
 export async function buildUsagePayload(options) {
+  if (options.useCache) {
+    return buildUsagePayloadFromCache(options);
+  }
+
   const files = [];
   for (const sessionsDir of options.sessionsDirs) {
     const dirFiles = await findJsonlFiles(sessionsDir);
@@ -946,11 +809,28 @@ export async function buildUsagePayload(options) {
   return payload;
 }
 
+async function buildUsagePayloadFromCache(options) {
+  const { closeUsageIndex, ensureFreshIndex, modelsInUsageIndex, openUsageIndex, usagePayloadFromIndex } = await import("./usage-index.mjs");
+  const index = await openUsageIndex({ dbPath: options.cacheDbPath, scanCheckTtlMs: 0, enableGc: false });
+  const startedAt = performance.now();
+  try {
+    const syncStats = await ensureFreshIndex(index, options.sessionsDirs);
+    await preparePricingForModels(modelsInUsageIndex(index, options.sessionsDirs), options);
+    const payload = usagePayloadFromIndex(index, syncStats, options);
+    payload.stats.cacheMode = true;
+    payload.stats.totalDurationMs = Math.round(performance.now() - startedAt);
+    return payload;
+  } finally {
+    closeUsageIndex(index);
+  }
+}
+
 async function preparePricingForModels(models, options) {
   if (typeof options.refreshPricing !== "boolean") return;
-  await initializePricing();
+  await initializePricing({ dbPath: options.cacheDbPath });
   const result = await refreshPricing({
     models,
+    dbPath: options.cacheDbPath,
     enabled: options.refreshPricing,
   });
   if (result.warning && typeof options.onPricingWarning === "function") {
@@ -978,7 +858,7 @@ async function main() {
 }
 
 function isDirectRun() {
-  return process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+  return process.argv[1] && __filename === path.resolve(process.argv[1]);
 }
 
 if (isDirectRun()) {

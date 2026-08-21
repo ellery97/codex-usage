@@ -24,6 +24,7 @@
     "usage": "node ./bin/codex-token-usage.mjs",
     "update-pricing": "node ./bin/update-pricing.mjs",
     "web": "node --no-warnings --expose-gc ./bin/codex-usage-server.mjs",
-    "smoke": "node ./bin/codex-token-usage.mjs --group month --limit 3 --json"
+    "smoke": "node ./bin/codex-token-usage.mjs --group month --limit 3 --json",
+    "benchmark:index": "node --no-warnings ./bin/benchmark-usage-index.mjs"
   }
 }
