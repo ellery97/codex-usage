@@ -3,6 +3,7 @@ import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { parseArgs } from "../bin/codex-token-usage.mjs";
 import { initializeDashboard, optionsFromQuery, runUsage } from "../bin/codex-usage-server.mjs";
 import { closeUsageIndex, ensureFreshIndex, openUsageIndex } from "../bin/usage-index.mjs";
 import { createUsageQueryService } from "../bin/usage-query.mjs";
@@ -27,6 +28,108 @@ test("API defaults to index refresh while refreshIndex=0 uses registered source 
   assert.deepEqual(calls[0].queryOptions.sessionsDirs, ["/cached/all"]);
   assert.equal(calls[1].queryPolicy.refreshIndex, true);
   assert.deepEqual(calls[1].queryOptions.sessionsDirs, ["/cached/windows"]);
+});
+
+test("rolling web ranges reuse one minute bucket and expire at the next minute", async (t) => {
+  const fixture = await usageFixture(t);
+  const index = await openUsageIndex({ dbPath: fixture.dbPath, scanCheckTtlMs: 0, enableGc: false });
+  t.after(() => closeUsageIndex(index));
+  await ensureFreshIndex(index, [fixture.sessionsDir], { force: true });
+  const service = createUsageQueryService(index);
+  const searchParams = new URLSearchParams({
+    sourceScope: "all",
+    range: "24h",
+    group: "model",
+    refreshIndex: "0",
+  });
+  const sourceRegistry = { all: [fixture.sessionsDir] };
+
+  const firstOptions = optionsFromQuery(searchParams, {
+    sourceRegistry,
+    nowMs: Date.parse("2026-08-21T12:34:05.000Z"),
+  });
+  const sameBucketOptions = optionsFromQuery(searchParams, {
+    sourceRegistry,
+    nowMs: Date.parse("2026-08-21T12:34:59.999Z"),
+  });
+  const nextBucketOptions = optionsFromQuery(searchParams, {
+    sourceRegistry,
+    nowMs: Date.parse("2026-08-21T12:35:00.000Z"),
+  });
+  assert.equal(firstOptions.fromMs, Date.parse("2026-08-20T12:34:00.000Z"));
+  assert.equal(sameBucketOptions.fromMs, firstOptions.fromMs);
+  assert.equal(nextBucketOptions.fromMs, firstOptions.fromMs + 60_000);
+
+  const first = await service.query(firstOptions, { refreshIndex: false });
+  const sameBucket = await service.query(sameBucketOptions, { refreshIndex: false });
+  const nextBucket = await service.query(nextBucketOptions, { refreshIndex: false });
+  assert.equal(first.stats.queryCacheHit, false);
+  assert.equal(sameBucket.stats.queryCacheHit, true);
+  assert.equal(nextBucket.stats.queryCacheHit, false);
+  assert.equal(nextBucket.stats.costCacheHit, false);
+});
+
+test("today follows the target timezone across midnight and DST regardless of argument order", async (t) => {
+  const timezone = "America/Los_Angeles";
+  const beforeMidnight = Date.parse("2026-03-09T06:59:59.999Z");
+  const afterMidnight = Date.parse("2026-03-09T07:00:00.000Z");
+  const todayFirst = parseArgs(["--today", "--timezone", timezone], { nowMs: beforeMidnight });
+  const timezoneFirst = parseArgs(["--timezone", timezone, "--today"], {
+    nowMs: beforeMidnight,
+  });
+  const nextDay = parseArgs(["--today", "--timezone", timezone], { nowMs: afterMidnight });
+  assert.equal(todayFirst.fromMs, Date.parse("2026-03-08T08:00:00.000Z"));
+  assert.equal(timezoneFirst.fromMs, todayFirst.fromMs);
+  assert.equal(nextDay.fromMs, Date.parse("2026-03-09T07:00:00.000Z"));
+  assert.equal(nextDay.fromMs - todayFirst.fromMs, 23 * 60 * 60 * 1000);
+
+  const fixture = await usageFixture(t);
+  const index = await openUsageIndex({ dbPath: fixture.dbPath, scanCheckTtlMs: 0, enableGc: false });
+  t.after(() => closeUsageIndex(index));
+  await ensureFreshIndex(index, [fixture.sessionsDir], { force: true });
+  const service = createUsageQueryService(index);
+  const base = options(fixture.sessionsDir);
+  const first = await service.query(
+    { ...base, rangeKey: "today", timezone, fromMs: todayFirst.fromMs },
+    { refreshIndex: false },
+  );
+  const repeated = await service.query(
+    { ...base, rangeKey: "today", timezone, fromMs: timezoneFirst.fromMs },
+    { refreshIndex: false },
+  );
+  const rolled = await service.query(
+    { ...base, rangeKey: "today", timezone, fromMs: nextDay.fromMs },
+    { refreshIndex: false },
+  );
+  assert.equal(first.stats.queryCacheHit, false);
+  assert.equal(repeated.stats.queryCacheHit, true);
+  assert.equal(rolled.stats.queryCacheHit, false);
+});
+
+test("absolute and unbounded web ranges do not depend on the injected clock", () => {
+  const sourceRegistry = { all: ["/cached/all"] };
+  const firstNow = Date.parse("2026-08-21T00:00:00.000Z");
+  const laterNow = Date.parse("2027-01-01T00:00:00.000Z");
+  const allFirst = optionsFromQuery(new URLSearchParams({ range: "all" }), {
+    sourceRegistry,
+    nowMs: firstNow,
+  });
+  const allLater = optionsFromQuery(new URLSearchParams({ range: "all" }), {
+    sourceRegistry,
+    nowMs: laterNow,
+  });
+  assert.equal(allFirst.fromMs, null);
+  assert.equal(allLater.fromMs, null);
+
+  const customParams = new URLSearchParams({
+    range: "custom",
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-20T00:00:00.000Z",
+  });
+  const customFirst = optionsFromQuery(customParams, { sourceRegistry, nowMs: firstNow });
+  const customLater = optionsFromQuery(customParams, { sourceRegistry, nowMs: laterNow });
+  assert.equal(customFirst.fromMs, customLater.fromMs);
+  assert.equal(customFirst.toMs, customLater.toMs);
 });
 
 test("cache-only filters keep the indexed snapshot until an explicit refresh", async (t) => {

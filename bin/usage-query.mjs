@@ -11,13 +11,11 @@ export const DEFAULT_QUERY_CACHE_ENTRIES = 64;
 
 export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACHE_ENTRIES } = {}) {
   const resultCache = new Map();
-  const rangeBounds = new Map();
   const capacity = Math.max(1, Number(maxEntries) || DEFAULT_QUERY_CACHE_ENTRIES);
   let activePricingVersion = pricingCatalogVersion();
 
   function clear() {
     resultCache.clear();
-    rangeBounds.clear();
     invalidateUsageCaches(index);
   }
 
@@ -38,15 +36,13 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
     if (refreshIndex) {
       syncStats = await ensureFreshIndex(index, options.sessionsDirs, { force: true });
       resultCache.clear();
-      rangeBounds.clear();
       invalidateUsageCaches(index);
     } else {
       syncStats = cachedIndexStats(index, options.sessionsDirs);
     }
 
     const currentPricingVersion = syncPricingVersion();
-    const resolvedOptions = resolveStableRange(options, rangeBounds);
-    const key = resultCacheKey(index, resolvedOptions, currentPricingVersion);
+    const key = resultCacheKey(index, options, currentPricingVersion);
     const cached = resultCache.get(key);
     if (cached) {
       resultCache.delete(key);
@@ -56,7 +52,7 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
       return payload;
     }
 
-    const payload = usagePayloadFromIndex(index, syncStats, resolvedOptions);
+    const payload = usagePayloadFromIndex(index, syncStats, options);
     payload.stats.indexRefreshSkipped = !refreshIndex;
     payload.stats.queryCacheHit = false;
     payload.stats.totalDurationMs = Math.round(performance.now() - startedAt);
@@ -72,22 +68,6 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
       return resultCache.size;
     },
   };
-}
-
-function resolveStableRange(options, rangeBounds) {
-  const resolved = { ...options, sessionsDirs: [...options.sessionsDirs] };
-  if (!options.rangeKey || options.rangeKey === "all" || options.rangeKey === "custom") {
-    return resolved;
-  }
-  const key = `${options.rangeKey}\0${options.timezone}`;
-  const existing = rangeBounds.get(key);
-  if (existing) {
-    resolved.fromMs = existing.fromMs;
-    resolved.toMs = existing.toMs;
-  } else {
-    rangeBounds.set(key, { fromMs: options.fromMs ?? null, toMs: options.toMs ?? null });
-  }
-  return resolved;
 }
 
 function resultCacheKey(index, options, pricingVersion) {

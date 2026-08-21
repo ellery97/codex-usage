@@ -165,7 +165,48 @@ function parseDuration(value) {
   return n * 7 * 24 * hour;
 }
 
-export function parseArgs(argv) {
+function zonedDateKey(timestampMs, timezone) {
+  const { year, month, day } = dateParts(timestampMs, timezone);
+  return `${year}-${month}-${day}`;
+}
+
+function startOfDateInTimezone(dateKey, timezone) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!match) {
+    throw new Error(`Invalid date: ${dateKey}`);
+  }
+  const [, year, month, day] = match.map(Number);
+  const utcGuess = Date.UTC(year, month - 1, day);
+  let low = utcGuess - 36 * 60 * 60 * 1000;
+  let high = utcGuess + 36 * 60 * 60 * 1000;
+
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (zonedDateKey(middle, timezone) < dateKey) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  if (zonedDateKey(low, timezone) !== dateKey) {
+    throw new Error(`Date ${dateKey} does not exist in timezone ${timezone}`);
+  }
+  return low;
+}
+
+export function startOfDayInTimezone(timestampMs, timezone) {
+  const now = Number(timestampMs);
+  if (!Number.isFinite(now)) {
+    throw new Error(`Invalid timestamp: ${timestampMs}`);
+  }
+  return startOfDateInTimezone(zonedDateKey(now, timezone), timezone);
+}
+
+export function parseArgs(argv, { nowMs = Date.now() } = {}) {
+  const currentTimeMs = Number(nowMs);
+  if (!Number.isFinite(currentTimeMs)) {
+    throw new Error(`Invalid current time: ${nowMs}`);
+  }
   const options = {
     codexHome: process.env.CODEX_HOME || path.join(homedir(), ".codex"),
     sessionsDir: null,
@@ -186,6 +227,7 @@ export function parseArgs(argv) {
     help: false,
     refreshPricing: process.env.CODEX_USAGE_PRICING_REFRESH !== "0",
   };
+  let relativeFrom = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -206,13 +248,14 @@ export function parseArgs(argv) {
       options.sessionsExplicit = true;
     } else if (arg === "--from" || arg === "--since") {
       options.fromMs = parseDateBound(next());
+      relativeFrom = null;
     } else if (arg === "--to" || arg === "--until") {
       options.toMs = parseDateBound(next(), { endOfDate: true });
     } else if (arg === "--last") {
-      options.fromMs = Date.now() - parseDuration(next());
+      relativeFrom = { type: "last", durationMs: parseDuration(next()) };
       options.toMs = null;
     } else if (arg === "--today") {
-      options.fromMs = parseLocalDateStart(formatDateKey(Date.now(), "day", options.timezone));
+      relativeFrom = { type: "today" };
       options.toMs = null;
     } else if (arg === "--group") {
       options.group = next();
@@ -256,6 +299,12 @@ export function parseArgs(argv) {
     }
   }
 
+  if (relativeFrom?.type === "last") {
+    options.fromMs = currentTimeMs - relativeFrom.durationMs;
+  } else if (relativeFrom?.type === "today") {
+    options.fromMs = startOfDayInTimezone(currentTimeMs, options.timezone);
+  }
+
   options.codexHome = expandHome(options.codexHome);
   if (!options.sessionsExplicit) {
     const fromEnv = envSessionDirs();
@@ -284,13 +333,13 @@ Options:
   --from, --since DATE    Include token events at or after DATE
   --to, --until DATE      Include token events through DATE if DATE is YYYY-MM-DD
   --last DURATION         Include recent events, e.g. 24h, 7d, 4w
-  --today                 Include events since local midnight
+  --today                 Include events since midnight in --timezone
   --group VALUE           none, day, month, model, cwd, session. Default: month
   --sort VALUE            key, total, input, output, cached, reasoning, requests, sessions, cost
   --asc / --desc          Sort direction. Date groups default ascending; others descending
   --limit N               Limit grouped rows. 0 means no limit
   --dedupe-scope VALUE    file or global. Default: global
-  --timezone TZ           Timezone for day/month labels. Default: local timezone
+  --timezone TZ           Timezone for date labels and --today. Default: local timezone
   --use-cache             Use the SQLite index also used by the Web dashboard
   --cache-db PATH         SQLite index path. Implies --use-cache. Default: .codex-usage/cache.sqlite
   --json                  Emit machine-readable JSON

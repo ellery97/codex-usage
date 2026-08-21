@@ -106,6 +106,10 @@ Source, range, grouping, sorting, direction, and deduplication apply automatical
 custom dates use a 200ms debounce. New logs written after startup appear only after the user clicks
 **Refresh index**, which invalidates the cost and result caches.
 
+The `24h`, `7d`, `30d`, and `12w` Web ranges roll in one-minute buckets: requests within a minute
+reuse a stable boundary, while the next minute gets a new cache key. `today` starts at midnight in
+the target IANA timezone and changes as soon as that timezone enters a new date.
+
 Global canonical representatives are persisted per normalized source-root set. Only dirty token
 keys are repaired after file changes, and at most eight recently used scopes are retained. Existing
 indexes migrate in place. When the stored scanner version is stale, the first index refresh after an
@@ -171,13 +175,13 @@ Available options:
 | `--from`, `--since DATE` | Include token events after this time |
 | `--to`, `--until DATE` | Include token events before this time; a date includes the full day |
 | `--last DURATION` | Recent period such as `24h`, `7d`, or `4w` |
-| `--today` | Start at local midnight |
+| `--today` | Start at midnight in `--timezone` |
 | `--group VALUE` | `none`, `day`, `month`, `model`, `cwd`, or `session` |
 | `--sort VALUE` | `key`, `total`, `input`, `output`, `cached`, `reasoning`, `requests`, `sessions`, or `cost` |
 | `--asc`, `--desc` | Sort direction |
 | `--limit N` | Maximum number of rows; `0` means unlimited |
 | `--dedupe-scope VALUE` | `global` or `file`; defaults to `global` |
-| `--timezone`, `--tz TZ` | Timezone for date grouping |
+| `--timezone`, `--tz TZ` | Timezone for date grouping and `--today` |
 | `--use-cache` | Reuse the Web dashboard's incremental SQLite index |
 | `--cache-db PATH` | Select the SQLite index path and imply `--use-cache` |
 | `--json` | Output JSON |
@@ -310,6 +314,7 @@ GET /api/usage
 Common query parameters are `range`, `sourceScope`, `from`, `to`, `group`, `sort`, `asc`,
 `desc`, `limit`, `dedupeScope`, and `refreshIndex`. `refreshIndex=0` reads SQLite only;
 `refreshIndex=1` refreshes the index first. The default remains `1` for API compatibility.
+Rolling ranges use one-minute time buckets, and `today` changes at midnight in the target timezone.
 
 Example:
 

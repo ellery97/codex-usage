@@ -126,6 +126,9 @@ Web 服务会在监听端口前同步一次默认数据源、读取日志中实�
 和去重条件会自动应用，行数与自定义日期使用 200ms 防抖。服务启动后产生的新日志不会自动进入统计；
 点击“刷新索引”后才会检查文件、读取新增字节并清空查询缓存。
 
+Web 的 `24h`、`7d`、`30d` 和 `12w` 范围按当前时间的分钟桶滚动：同一分钟内可复用查询缓存，跨分钟
+会生成新的实际边界。`today` 按目标 IANA 时区的日期计算当天 0 点，并在该时区跨日时立即切换。
+
 全局去重结果按规范化的数据源目录组合持久化，文件变化后只修复受影响的累计 Token key，最多保留
 8 个最近使用的范围。旧索引会原地迁移；如果索引中的扫描器版本已过期，升级后的首次索引刷新会逐文件
 完整重读现有 JSONL，以恢复 cache-write、六字段累计 Token key 和可恢复解析状态。每个文件转换成功后
@@ -186,13 +189,13 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | `--from`, `--since DATE` | 只包含该时间点之后的 token 事件 |
 | `--to`, `--until DATE` | 只包含该时间点之前的 token 事件；传 `YYYY-MM-DD` 时包含整天 |
 | `--last DURATION` | 最近一段时间，例如 `24h`、`7d`、`4w` |
-| `--today` | 从本地当天 0 点开始统计 |
+| `--today` | 从 `--timezone` 指定时区的当天 0 点开始统计 |
 | `--group VALUE` | 分组方式：`none`、`day`、`month`、`model`、`cwd`、`session` |
 | `--sort VALUE` | 排序字段：`key`、`total`、`input`、`output`、`cached`、`reasoning`、`requests`、`sessions`、`cost` |
 | `--asc`, `--desc` | 排序方向；日期分组默认升序，其它分组默认降序 |
 | `--limit N` | 限制输出行数；`0` 表示不限制 |
 | `--dedupe-scope VALUE` | 去重范围：`global` 或 `file`，默认 `global` |
-| `--timezone`, `--tz TZ` | 日期分组使用的时区，默认本机时区 |
+| `--timezone`, `--tz TZ` | 日期分组和 `--today` 使用的时区，默认本机时区 |
 | `--use-cache` | 使用与 Web 共用的 SQLite 增量索引；默认 CLI 仍为无状态完整扫描 |
 | `--cache-db PATH` | 指定 SQLite 索引路径，并隐含启用 `--use-cache` |
 | `--json` | 输出 JSON |
@@ -338,7 +341,7 @@ GET /api/usage
 
 | 参数 | 示例 | 说明 |
 | --- | --- | --- |
-| `range` | `all`、`today`、`24h`、`7d`、`30d`、`12w`、`custom` | 时间范围 |
+| `range` | `all`、`today`、`24h`、`7d`、`30d`、`12w`、`custom` | 时间范围；滚动范围按分钟更新 |
 | `sourceScope` | `all`、`local`、`windows` | 数据源范围 |
 | `from` | `2026-04-01` | `range=custom` 时的开始日期 |
 | `to` | `2026-04-30` | `range=custom` 时的结束日期 |

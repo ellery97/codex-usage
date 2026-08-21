@@ -44,6 +44,7 @@ const RANGE_TO_LAST = new Map([
   ["30d", "30d"],
   ["12w", "12w"],
 ]);
+const RELATIVE_RANGE_BUCKET_MS = 60 * 1000;
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -136,10 +137,19 @@ function usageArgvFromQuery(searchParams, sourceRegistry = null) {
   return args;
 }
 
-export function optionsFromQuery(searchParams, { sourceRegistry = null } = {}) {
-  const options = parseArgs(usageArgvFromQuery(searchParams, sourceRegistry));
+export function optionsFromQuery(
+  searchParams,
+  { sourceRegistry = null, nowMs = Date.now() } = {},
+) {
+  const rangeKey = searchParams.get("range") || "all";
+  const rangeNowMs = RANGE_TO_LAST.has(rangeKey)
+    ? Math.floor(Number(nowMs) / RELATIVE_RANGE_BUCKET_MS) * RELATIVE_RANGE_BUCKET_MS
+    : Number(nowMs);
+  const options = parseArgs(usageArgvFromQuery(searchParams, sourceRegistry), {
+    nowMs: rangeNowMs,
+  });
   options.sourceScope = sourceScopeFromQuery(searchParams);
-  options.rangeKey = searchParams.get("range") || "all";
+  options.rangeKey = rangeKey;
   return options;
 }
 
