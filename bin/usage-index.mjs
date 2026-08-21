@@ -13,6 +13,7 @@ import {
   pricingCatalogVersion,
   pricingMetadata,
 } from "./openai-pricing.mjs";
+import { sqlPathFilter } from "./path-utils.mjs";
 import { scanSessionFileRange, SESSION_SCANNER_VERSION } from "./session-scanner.mjs";
 import { assumedModelsFromAggregatedRows } from "./usage-costs.mjs";
 import {
@@ -218,7 +219,7 @@ export function modelsInUsageIndex(index, sessionsDirs = null) {
       .all()
       .map((row) => String(row.model));
   }
-  const filter = filePathFilter("file_path", sessionsDirs);
+  const filter = sqlPathFilter("file_path", sessionsDirs);
   return index.db
     .prepare(`SELECT DISTINCT model FROM events WHERE model NOT IN ('', '(unknown model)') AND ${filter.sql} ORDER BY model`)
     .all(...filter.params)
@@ -393,7 +394,7 @@ function materializeCostedEvents(index, options, scopeId, { force = false } = {}
     params.push(scopeId);
   } else {
     source = "events e";
-    const sourceFilter = filePathFilter("e.file_path", options.sessionsDirs);
+    const sourceFilter = sqlPathFilter("e.file_path", options.sessionsDirs);
     filters.push(sourceFilter.sql);
     params.push(...sourceFilter.params);
   }
@@ -994,7 +995,7 @@ function compareRows(a, b, options) {
 }
 
 function fileStatsForSessions(index, sessionsDirs) {
-  const filter = filePathFilter("path", sessionsDirs);
+  const filter = sqlPathFilter("path", sessionsDirs);
   return index.db
     .prepare(`
       SELECT
@@ -1040,23 +1041,6 @@ function sessionsKey(sessionsDirs) {
 function filePathInSessions(filePath, sessionsDirs) {
   const resolved = path.resolve(filePath);
   return sessionsDirs.some((dir) => resolved === dir || resolved.startsWith(`${dir}${path.sep}`));
-}
-
-function escapeLike(value) {
-  return String(value).replace(/[\\%_]/g, (match) => `\\${match}`);
-}
-
-function filePathFilter(column, sessionsDirs) {
-  const parts = [];
-  const params = [];
-  for (const sessionsDir of sessionsDirs) {
-    parts.push(`(${column} = ? OR ${column} LIKE ? ESCAPE '\\')`);
-    params.push(sessionsDir, `${escapeLike(sessionsDir)}${path.sep}%`);
-  }
-  return {
-    sql: parts.length ? `(${parts.join(" OR ")})` : "1 = 0",
-    params,
-  };
 }
 
 function maybeCollectGarbage(index) {
