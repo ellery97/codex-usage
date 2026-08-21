@@ -11,6 +11,7 @@ import {
   pricingMetadata,
   refreshPricing,
 } from "./openai-pricing.mjs";
+import { splitPathList } from "./path-utils.mjs";
 import {
   scanSessionFile,
   scanSessionFileRange,
@@ -56,7 +57,6 @@ export const DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR = path.join(
   ".codex",
   "archived_sessions",
 );
-const SESSION_DIR_SEPARATOR = ":";
 const SKIP_WINDOWS_USER_DIRS = new Set(["All Users", "Default", "Default User", "Public"]);
 
 function expandHome(inputPath) {
@@ -91,10 +91,7 @@ function normalizeSessionDirs(dirs) {
 }
 
 function envSessionDirs() {
-  return String(process.env.CODEX_USAGE_SESSIONS || "")
-    .split(SESSION_DIR_SEPARATOR)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return splitPathList(process.env.CODEX_USAGE_SESSIONS);
 }
 
 export function defaultWindowsSessionDirs() {
@@ -349,7 +346,7 @@ Options:
 
 Notes:
   - The tool reads local Codex JSONL session files and aggregates event_msg.token_count.
-  - CODEX_USAGE_SESSIONS can provide multiple sessions directories separated by ":".
+  - CODEX_USAGE_SESSIONS can provide multiple sessions directories using the platform path-list delimiter (";" on Windows, ":" on POSIX).
   - --use-cache stores a local SQLite index, tails safe appends, and fully rescans rewritten files.
   - Duplicate token_count lines with the same cumulative total are skipped.
   - Global dedupe also skips copied historical token_count events embedded in later rollouts.

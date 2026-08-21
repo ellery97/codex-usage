@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { sqlPathFilter } from "./path-utils.mjs";
 
 const MAX_CACHED_SCOPES = 8;
 
@@ -124,7 +125,7 @@ export function ensureCanonicalScope(db, sessionsDirs) {
 }
 
 function rebuildScope(db, scopeId, roots, rootsJson, fingerprint) {
-  const filter = filePathFilter("e.file_path", roots);
+  const filter = sqlPathFilter("e.file_path", roots);
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare("DELETE FROM canonical_events WHERE scope_id = ?").run(scopeId);
@@ -168,7 +169,7 @@ function rebuildScope(db, scopeId, roots, rootsJson, fingerprint) {
 }
 
 function repairScope(db, scopeId, roots, fingerprint, dirtyKeys) {
-  const filter = filePathFilter("e.file_path", roots);
+  const filter = sqlPathFilter("e.file_path", roots);
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare(
@@ -229,7 +230,7 @@ function acknowledgeTrackedChange(db, scopeId, fingerprint) {
 }
 
 function sourceFingerprint(db, roots) {
-  const filter = filePathFilter("path", roots);
+  const filter = sqlPathFilter("path", roots);
   const rows = db
     .prepare(
       `SELECT path, size, mtime_ms, events_count, scanned_at_ms
@@ -283,21 +284,4 @@ function evictOldScopes(db, currentScopeId) {
 function filePathInRoots(filePath, roots) {
   const resolved = path.resolve(filePath);
   return roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
-}
-
-function filePathFilter(column, roots) {
-  const parts = [];
-  const params = [];
-  for (const root of roots) {
-    parts.push(`(${column} = ? OR ${column} LIKE ? ESCAPE '\\')`);
-    params.push(root, `${escapeLike(root)}${path.sep}%`);
-  }
-  return {
-    sql: parts.length ? `(${parts.join(" OR ")})` : "1 = 0",
-    params,
-  };
-}
-
-function escapeLike(value) {
-  return String(value).replace(/[\\%_]/g, (match) => `\\${match}`);
 }
