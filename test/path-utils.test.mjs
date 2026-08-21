@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { parseArgs } from "../bin/codex-token-usage.mjs";
 import { splitPathList, sqlPathFilter } from "../bin/path-utils.mjs";
 
 test("splitPathList preserves Windows drive-letter colons", () => {
@@ -15,6 +17,22 @@ test("splitPathList supports POSIX path lists", () => {
     "/home/alice/.codex/sessions",
     "/srv/codex/sessions",
   ]);
+});
+
+test("CODEX_USAGE_SESSIONS uses the native platform path-list delimiter", () => {
+  const previous = process.env.CODEX_USAGE_SESSIONS;
+  const roots =
+    process.platform === "win32"
+      ? [String.raw`C:\Codex\sessions`, String.raw`D:\Codex\sessions`]
+      : ["/tmp/codex-a/sessions", "/tmp/codex-b/sessions"];
+  process.env.CODEX_USAGE_SESSIONS = roots.join(path.delimiter);
+  try {
+    const options = parseArgs([]);
+    assert.deepEqual(options.sessionsDirs, roots.map((root) => path.resolve(root)));
+  } finally {
+    if (previous == null) delete process.env.CODEX_USAGE_SESSIONS;
+    else process.env.CODEX_USAGE_SESSIONS = previous;
+  }
 });
 
 test("sqlPathFilter keeps the Windows descendant wildcard active", () => {
