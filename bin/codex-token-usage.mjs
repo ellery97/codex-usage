@@ -1,20 +1,37 @@
 #!/usr/bin/env node
 
-import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { costStatsForUsage, pricingMetadata } from "./openai-pricing.mjs";
+import {
+  costStatsForUsage,
+  initializePricing,
+  pricingMetadata,
+  refreshPricing,
+} from "./openai-pricing.mjs";
+import {
+  scanSessionFile,
+  scanSessionFileRange,
+  SESSION_SCANNER_VERSION,
+} from "./session-scanner.mjs";
+import { addUsage, usageZero } from "./usage-values.mjs";
+import {
+  addAssumedModel,
+  addCostStats,
+  addUnpricedModel,
+  assumedModelsFromMap,
+  costZero,
+  unpricedModelsFromMap,
+} from "./usage-costs.mjs";
 
-const USAGE_FIELDS = [
-  "input_tokens",
-  "cached_input_tokens",
-  "output_tokens",
-  "reasoning_output_tokens",
-  "total_tokens",
-];
+export { scanSessionFile, scanSessionFileRange, SESSION_SCANNER_VERSION };
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, "..");
+const DEFAULT_DB_PATH = path.join(ROOT, ".codex-usage", "cache.sqlite");
 
 const DATE_GROUPS = new Set(["day", "month"]);
 const GROUPS = new Set(["none", "day", "month", "model", "cwd", "session"]);
@@ -41,70 +58,6 @@ export const DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR = path.join(
 );
 const SESSION_DIR_SEPARATOR = ":";
 const SKIP_WINDOWS_USER_DIRS = new Set(["All Users", "Default", "Default User", "Public"]);
-
-function usageZero() {
-  return {
-    input_tokens: 0,
-    cached_input_tokens: 0,
-    output_tokens: 0,
-    reasoning_output_tokens: 0,
-    total_tokens: 0,
-  };
-}
-
-function normalizeUsage(value) {
-  const usage = usageZero();
-  if (!value || typeof value !== "object") {
-    return usage;
-  }
-  for (const field of USAGE_FIELDS) {
-    const n = Number(value[field] ?? 0);
-    usage[field] = Number.isFinite(n) ? n : 0;
-  }
-  return usage;
-}
-
-function addUsage(target, source) {
-  for (const field of USAGE_FIELDS) {
-    target[field] += source[field] || 0;
-  }
-  return target;
-}
-
-function costZero() {
-  return {
-    estimated_cost_usd: 0,
-    priced_requests: 0,
-    unpriced_requests: 0,
-    priced_total_tokens: 0,
-    unpriced_total_tokens: 0,
-  };
-}
-
-function addCostStats(target, source) {
-  target.estimated_cost_usd += Number(source.estimated_cost_usd || 0);
-  target.priced_requests += Number(source.priced_requests || 0);
-  target.unpriced_requests += Number(source.unpriced_requests || 0);
-  target.priced_total_tokens += Number(source.priced_total_tokens || 0);
-  target.unpriced_total_tokens += Number(source.unpriced_total_tokens || 0);
-  return target;
-}
-
-function diffUsage(next, prev) {
-  const usage = usageZero();
-  for (const field of USAGE_FIELDS) {
-    usage[field] = Math.max(0, (next[field] || 0) - (prev[field] || 0));
-  }
-  return usage;
-}
-
-function usageKey(usage) {
-  return USAGE_FIELDS.map((field) => usage[field] || 0).join(":");
-}
-
-function hasUsage(usage) {
-  return USAGE_FIELDS.some((field) => (usage[field] || 0) > 0);
-}
 
 function expandHome(inputPath) {
   if (!inputPath) {
@@ -212,7 +165,48 @@ function parseDuration(value) {
   return n * 7 * 24 * hour;
 }
 
-export function parseArgs(argv) {
+function zonedDateKey(timestampMs, timezone) {
+  const { year, month, day } = dateParts(timestampMs, timezone);
+  return `${year}-${month}-${day}`;
+}
+
+function startOfDateInTimezone(dateKey, timezone) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!match) {
+    throw new Error(`Invalid date: ${dateKey}`);
+  }
+  const [, year, month, day] = match.map(Number);
+  const utcGuess = Date.UTC(year, month - 1, day);
+  let low = utcGuess - 36 * 60 * 60 * 1000;
+  let high = utcGuess + 36 * 60 * 60 * 1000;
+
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (zonedDateKey(middle, timezone) < dateKey) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  if (zonedDateKey(low, timezone) !== dateKey) {
+    throw new Error(`Date ${dateKey} does not exist in timezone ${timezone}`);
+  }
+  return low;
+}
+
+export function startOfDayInTimezone(timestampMs, timezone) {
+  const now = Number(timestampMs);
+  if (!Number.isFinite(now)) {
+    throw new Error(`Invalid timestamp: ${timestampMs}`);
+  }
+  return startOfDateInTimezone(zonedDateKey(now, timezone), timezone);
+}
+
+export function parseArgs(argv, { nowMs = Date.now() } = {}) {
+  const currentTimeMs = Number(nowMs);
+  if (!Number.isFinite(currentTimeMs)) {
+    throw new Error(`Invalid current time: ${nowMs}`);
+  }
   const options = {
     codexHome: process.env.CODEX_HOME || path.join(homedir(), ".codex"),
     sessionsDir: null,
@@ -226,10 +220,14 @@ export function parseArgs(argv) {
     limit: 0,
     dedupeScope: "global",
     timezone: defaultTimezone(),
+    useCache: false,
+    cacheDbPath: path.resolve(process.env.CODEX_USAGE_DB || DEFAULT_DB_PATH),
     json: false,
     csv: false,
     help: false,
+    refreshPricing: process.env.CODEX_USAGE_PRICING_REFRESH !== "0",
   };
+  let relativeFrom = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -250,13 +248,14 @@ export function parseArgs(argv) {
       options.sessionsExplicit = true;
     } else if (arg === "--from" || arg === "--since") {
       options.fromMs = parseDateBound(next());
+      relativeFrom = null;
     } else if (arg === "--to" || arg === "--until") {
       options.toMs = parseDateBound(next(), { endOfDate: true });
     } else if (arg === "--last") {
-      options.fromMs = Date.now() - parseDuration(next());
+      relativeFrom = { type: "last", durationMs: parseDuration(next()) };
       options.toMs = null;
     } else if (arg === "--today") {
-      options.fromMs = parseLocalDateStart(formatDateKey(Date.now(), "day", options.timezone));
+      relativeFrom = { type: "today" };
       options.toMs = null;
     } else if (arg === "--group") {
       options.group = next();
@@ -284,13 +283,26 @@ export function parseArgs(argv) {
       }
     } else if (arg === "--timezone" || arg === "--tz") {
       options.timezone = next();
+    } else if (arg === "--use-cache") {
+      options.useCache = true;
+    } else if (arg === "--cache-db") {
+      options.cacheDbPath = path.resolve(expandHome(next()));
+      options.useCache = true;
     } else if (arg === "--json") {
       options.json = true;
     } else if (arg === "--csv") {
       options.csv = true;
+    } else if (arg === "--no-refresh-pricing") {
+      options.refreshPricing = false;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
+  }
+
+  if (relativeFrom?.type === "last") {
+    options.fromMs = currentTimeMs - relativeFrom.durationMs;
+  } else if (relativeFrom?.type === "today") {
+    options.fromMs = startOfDayInTimezone(currentTimeMs, options.timezone);
   }
 
   options.codexHome = expandHome(options.codexHome);
@@ -321,24 +333,29 @@ Options:
   --from, --since DATE    Include token events at or after DATE
   --to, --until DATE      Include token events through DATE if DATE is YYYY-MM-DD
   --last DURATION         Include recent events, e.g. 24h, 7d, 4w
-  --today                 Include events since local midnight
+  --today                 Include events since midnight in --timezone
   --group VALUE           none, day, month, model, cwd, session. Default: month
   --sort VALUE            key, total, input, output, cached, reasoning, requests, sessions, cost
   --asc / --desc          Sort direction. Date groups default ascending; others descending
   --limit N               Limit grouped rows. 0 means no limit
   --dedupe-scope VALUE    file or global. Default: global
-  --timezone TZ           Timezone for day/month labels. Default: local timezone
+  --timezone TZ           Timezone for date labels and --today. Default: local timezone
+  --use-cache             Use the SQLite index also used by the Web dashboard
+  --cache-db PATH         SQLite index path. Implies --use-cache. Default: .codex-usage/cache.sqlite
   --json                  Emit machine-readable JSON
   --csv                   Emit grouped rows as CSV
+  --no-refresh-pricing    Use the last validated local price catalog without network refresh
   -h, --help              Show this help
 
 Notes:
   - The tool reads local Codex JSONL session files and aggregates event_msg.token_count.
   - CODEX_USAGE_SESSIONS can provide multiple sessions directories separated by ":".
+  - --use-cache stores a local SQLite index, tails safe appends, and fully rescans rewritten files.
   - Duplicate token_count lines with the same cumulative total are skipped.
   - Global dedupe also skips copied historical token_count events embedded in later rollouts.
-  - estimated_cost_usd uses a local OpenAI API pricing snapshot and is only an estimate.
-  - cached_input_tokens and reasoning_output_tokens are subsets; do not add them to total_tokens again.`;
+  - estimated_cost_usd contains only models with published prices; reference totals additionally include explicitly labelled model assumptions.
+  - Prices are selected at each event timestamp and estimate Standard API usage, not a personal ChatGPT/Codex bill.
+  - cached_input_tokens, cache_write_input_tokens, and reasoning_output_tokens are subsets; do not add them to total_tokens again.`;
 }
 
 export async function findJsonlFiles(root) {
@@ -368,114 +385,6 @@ export async function findJsonlFiles(root) {
 
   await walk(root);
   return files;
-}
-
-function sessionIdFromPath(filePath) {
-  const base = path.basename(filePath, ".jsonl");
-  const match = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(base);
-  return match ? match[1] : base;
-}
-
-export async function scanSessionFile(filePath) {
-  const events = [];
-  const seenTotals = new Set();
-  const stats = {
-    duplicateTokenEvents: 0,
-    parseErrors: 0,
-    tokenEvents: 0,
-  };
-
-  const session = {
-    id: sessionIdFromPath(filePath),
-    file: filePath,
-    cwd: "",
-    model: "",
-    createdAtMs: null,
-  };
-
-  let context = { cwd: "", model: "" };
-  let lastTotalUsage = usageZero();
-  let sawPrimarySessionMeta = false;
-
-  const rl = readline.createInterface({
-    input: createReadStream(filePath, { encoding: "utf8" }),
-    crlfDelay: Infinity,
-  });
-
-  for await (const line of rl) {
-    if (
-      !line.includes('"token_count"') &&
-      !line.includes('"turn_context"') &&
-      !line.includes('"session_meta"')
-    ) {
-      continue;
-    }
-
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      stats.parseErrors += 1;
-      continue;
-    }
-
-    if (obj.type === "session_meta" && obj.payload) {
-      if (!sawPrimarySessionMeta) {
-        session.id = obj.payload.id || session.id;
-        session.cwd = obj.payload.cwd || session.cwd;
-        const created = Date.parse(obj.payload.timestamp || obj.timestamp || "");
-        if (!Number.isNaN(created)) {
-          session.createdAtMs = created;
-        }
-        sawPrimarySessionMeta = true;
-      }
-      continue;
-    }
-
-    if (obj.type === "turn_context" && obj.payload) {
-      context = {
-        cwd: obj.payload.cwd || context.cwd || session.cwd,
-        model: obj.payload.model || context.model || session.model,
-      };
-      session.cwd = context.cwd || session.cwd;
-      session.model = context.model || session.model;
-      continue;
-    }
-
-    if (obj.type !== "event_msg" || obj.payload?.type !== "token_count") {
-      continue;
-    }
-
-    stats.tokenEvents += 1;
-    const info = obj.payload.info || {};
-    const totalUsage = normalizeUsage(info.total_token_usage);
-    const totalKey = usageKey(totalUsage);
-    if (seenTotals.has(totalKey)) {
-      stats.duplicateTokenEvents += 1;
-      continue;
-    }
-    seenTotals.add(totalKey);
-
-    let usage = normalizeUsage(info.last_token_usage);
-    if (!hasUsage(usage)) {
-      usage = diffUsage(totalUsage, lastTotalUsage);
-    }
-    lastTotalUsage = totalUsage;
-
-    const timestampMs = Date.parse(obj.timestamp || "");
-    events.push({
-      timestampMs: Number.isNaN(timestampMs) ? session.createdAtMs : timestampMs,
-      sessionCreatedAtMs: session.createdAtMs,
-      sessionId: session.id,
-      totalUsageKey: totalKey,
-      file: filePath,
-      cwd: context.cwd || session.cwd || "(unknown cwd)",
-      model: context.model || session.model || "(unknown model)",
-      usage,
-    });
-  }
-
-  return { session, events, stats };
 }
 
 export function inRange(event, options) {
@@ -567,15 +476,22 @@ export function aggregate(events, options) {
     requests: 0,
     usage: usageZero(),
     cost: costZero(),
+    assumedModels: new Map(),
+    unpricedModels: new Map(),
   };
   const groups = new Map();
 
   for (const event of events) {
-    const eventCost = costStatsForUsage(event.model, event.usage);
+    const eventCost = costStatsForUsage(event.model, event.usage, event.timestampMs);
     totals.sessions.add(event.sessionId);
     totals.requests += 1;
     addUsage(totals.usage, event.usage);
     addCostStats(totals.cost, eventCost);
+    if (eventCost.assumed_requests > 0) {
+      addAssumedModel(totals.assumedModels, event, eventCost);
+    } else if (eventCost.unpriced_requests > 0) {
+      addUnpricedModel(totals.unpricedModels, event);
+    }
 
     if (options.group === "none") {
       continue;
@@ -619,12 +535,17 @@ export function aggregate(events, options) {
     },
     rows: limitedRows,
     rowCount: rows.length,
+    assumedModels: assumedModelsFromMap(totals.assumedModels),
+    unpricedModels: unpricedModelsFromMap(totals.unpricedModels),
   };
 }
 
 function withDerivedUsage(usage) {
   const out = { ...usage };
-  out.uncached_input_tokens = Math.max(0, out.input_tokens - out.cached_input_tokens);
+  out.uncached_input_tokens = Math.max(
+    0,
+    out.input_tokens - out.cached_input_tokens - out.cache_write_input_tokens,
+  );
   out.cache_hit_ratio = out.input_tokens > 0 ? out.cached_input_tokens / out.input_tokens : 0;
   return out;
 }
@@ -638,7 +559,7 @@ function sortValue(row, sort) {
   if (sort === "reasoning") return row.reasoning_output_tokens;
   if (sort === "requests") return row.requests;
   if (sort === "sessions") return row.sessions;
-  if (sort === "cost") return row.estimated_cost_usd;
+  if (sort === "cost") return row.reference_total_cost_usd;
   return row.key;
 }
 
@@ -684,11 +605,13 @@ function table(rows) {
     "requests",
     "input",
     "cached",
+    "cache-write",
     "uncached",
     "output",
     "reasoning",
     "total",
-    "cost",
+    "official-cost",
+    "reference-cost",
     "cache%",
   ];
   const body = rows.map((row) => [
@@ -697,11 +620,13 @@ function table(rows) {
     fmtNum(row.requests),
     fmtNum(row.input_tokens),
     fmtNum(row.cached_input_tokens),
+    fmtNum(row.cache_write_input_tokens),
     fmtNum(row.uncached_input_tokens),
     fmtNum(row.output_tokens),
     fmtNum(row.reasoning_output_tokens),
     fmtNum(row.total_tokens),
     fmtUsd(row.estimated_cost_usd),
+    fmtUsd(row.reference_total_cost_usd),
     fmtPct(row.cache_hit_ratio),
   ]);
   const widths = headers.map((header, idx) =>
@@ -725,7 +650,7 @@ function csvEscape(value) {
   return text;
 }
 
-function emitCsv(rows) {
+export function emitCsv(rows) {
   const headers = [
     "group",
     "sessions",
@@ -742,6 +667,16 @@ function emitCsv(rows) {
     "priced_total_tokens",
     "unpriced_total_tokens",
     "cache_hit_ratio",
+    "cache_write_input_tokens",
+    "assumed_cost_usd",
+    "assumed_upper_bound_cost_usd",
+    "reference_total_cost_usd",
+    "reference_total_upper_bound_cost_usd",
+    "assumed_requests",
+    "assumed_total_tokens",
+    "provisional_priced_requests",
+    "provisional_priced_total_tokens",
+    "provisional_estimated_cost_usd",
   ];
   const lines = [headers.join(",")];
   for (const row of rows) {
@@ -762,6 +697,16 @@ function emitCsv(rows) {
         row.priced_total_tokens,
         row.unpriced_total_tokens,
         row.cache_hit_ratio,
+        row.cache_write_input_tokens,
+        row.assumed_cost_usd,
+        row.assumed_upper_bound_cost_usd,
+        row.reference_total_cost_usd,
+        row.reference_total_upper_bound_cost_usd,
+        row.assumed_requests,
+        row.assumed_total_tokens,
+        row.provisional_priced_requests,
+        row.provisional_priced_total_tokens,
+        row.provisional_estimated_cost_usd,
       ]
         .map(csvEscape)
         .join(","),
@@ -797,13 +742,41 @@ function textOutput(result, options, scanStats) {
   lines.push(`  requests: ${fmtNum(result.totals.requests)}`);
   lines.push(`  input_tokens: ${fmtNum(result.totals.input_tokens)}`);
   lines.push(`  cached_input_tokens: ${fmtNum(result.totals.cached_input_tokens)} (${fmtPct(result.totals.cache_hit_ratio)})`);
+  lines.push(`  cache_write_input_tokens: ${fmtNum(result.totals.cache_write_input_tokens)}`);
   lines.push(`  uncached_input_tokens: ${fmtNum(result.totals.uncached_input_tokens)}`);
   lines.push(`  output_tokens: ${fmtNum(result.totals.output_tokens)}`);
   lines.push(`  reasoning_output_tokens: ${fmtNum(result.totals.reasoning_output_tokens)}`);
   lines.push(`  total_tokens: ${fmtNum(result.totals.total_tokens)}`);
-  lines.push(`  estimated_cost_usd: ${fmtUsd(result.totals.estimated_cost_usd)}`);
+  lines.push(`  official_estimated_cost_usd: ${fmtUsd(result.totals.estimated_cost_usd)}`);
+  if (result.totals.provisional_priced_requests > 0) {
+    lines.push(
+      `  provisional_priced: ${fmtNum(result.totals.provisional_priced_requests)} requests / ${fmtUsd(result.totals.provisional_estimated_cost_usd)}`,
+    );
+  }
+  if (result.totals.assumed_requests > 0) {
+    lines.push(
+      `  assumed_cost_usd: ${fmtUsd(result.totals.assumed_cost_usd)} .. ${fmtUsd(result.totals.assumed_upper_bound_cost_usd)}`,
+    );
+  }
+  lines.push(
+    `  reference_total_cost_usd: ${fmtUsd(result.totals.reference_total_cost_usd)} .. ${fmtUsd(result.totals.reference_total_upper_bound_cost_usd)}`,
+  );
+  if (result.assumedModels?.length > 0) {
+    const topModels = result.assumedModels
+      .slice(0, 8)
+      .map((row) => `${row.model} -> ${row.assumedModel} (${fmtNum(row.total_tokens)} tokens)`)
+      .join(", ");
+    lines.push(`  assumed_models: ${topModels}${result.assumedModels.length > 8 ? ", ..." : ""}`);
+  }
   if (result.totals.unpriced_total_tokens > 0) {
     lines.push(`  unpriced_total_tokens: ${fmtNum(result.totals.unpriced_total_tokens)}`);
+  }
+  if (result.unpricedModels?.length > 0) {
+    const topModels = result.unpricedModels
+      .slice(0, 8)
+      .map((row) => `${row.model} (${fmtNum(row.total_tokens)} tokens)`)
+      .join(", ");
+    lines.push(`  unpriced_models: ${topModels}${result.unpricedModels.length > 8 ? ", ..." : ""}`);
   }
 
   if (options.group !== "none") {
@@ -816,6 +789,10 @@ function textOutput(result, options, scanStats) {
 }
 
 export async function buildUsagePayload(options) {
+  if (options.useCache) {
+    return buildUsagePayloadFromCache(options);
+  }
+
   const files = [];
   for (const sessionsDir of options.sessionsDirs) {
     const dirFiles = await findJsonlFiles(sessionsDir);
@@ -831,6 +808,7 @@ export async function buildUsagePayload(options) {
     globalDuplicateTokenEvents: 0,
   };
   const globalSeenTotals = new Set();
+  const observedModels = new Set();
 
   for (const file of files) {
     const scanned = await scanSessionFile(file);
@@ -841,6 +819,7 @@ export async function buildUsagePayload(options) {
       scanStats.filesWithUsage += 1;
     }
     for (const event of scanned.events) {
+      if (event.model) observedModels.add(event.model);
       if (options.dedupeScope === "global") {
         if (globalSeenTotals.has(event.totalUsageKey)) {
           scanStats.globalDuplicateTokenEvents += 1;
@@ -854,6 +833,7 @@ export async function buildUsagePayload(options) {
     }
   }
 
+  await preparePricingForModels(observedModels, options);
   const result = aggregate(events, options);
   const payload = {
     source: options.sessionsDirs,
@@ -869,11 +849,42 @@ export async function buildUsagePayload(options) {
     totals: result.totals,
     rows: result.rows,
     rowCount: result.rowCount,
+    assumedModels: result.assumedModels,
+    unpricedModels: result.unpricedModels,
     stats: scanStats,
     pricing: pricingMetadata(),
   };
 
   return payload;
+}
+
+async function buildUsagePayloadFromCache(options) {
+  const { closeUsageIndex, ensureFreshIndex, modelsInUsageIndex, openUsageIndex, usagePayloadFromIndex } = await import("./usage-index.mjs");
+  const index = await openUsageIndex({ dbPath: options.cacheDbPath, scanCheckTtlMs: 0, enableGc: false });
+  const startedAt = performance.now();
+  try {
+    const syncStats = await ensureFreshIndex(index, options.sessionsDirs);
+    await preparePricingForModels(modelsInUsageIndex(index, options.sessionsDirs), options);
+    const payload = usagePayloadFromIndex(index, syncStats, options);
+    payload.stats.cacheMode = true;
+    payload.stats.totalDurationMs = Math.round(performance.now() - startedAt);
+    return payload;
+  } finally {
+    closeUsageIndex(index);
+  }
+}
+
+async function preparePricingForModels(models, options) {
+  if (typeof options.refreshPricing !== "boolean") return;
+  await initializePricing({ dbPath: options.cacheDbPath });
+  const result = await refreshPricing({
+    models,
+    dbPath: options.cacheDbPath,
+    enabled: options.refreshPricing,
+  });
+  if (result.warning && typeof options.onPricingWarning === "function") {
+    options.onPricingWarning(result.warning);
+  }
 }
 
 async function main() {
@@ -882,6 +893,7 @@ async function main() {
     console.log(helpText());
     return;
   }
+  options.onPricingWarning = (message) => console.error(`codex-token-usage: ${message}`);
 
   const payload = await buildUsagePayload(options);
 
@@ -895,7 +907,7 @@ async function main() {
 }
 
 function isDirectRun() {
-  return process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+  return process.argv[1] && __filename === path.resolve(process.argv[1]);
 }
 
 if (isDirectRun()) {

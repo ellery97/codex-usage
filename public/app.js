@@ -1,7 +1,7 @@
 const state = {
   data: null,
   rows: [],
-  loading: false,
+  blockingLoading: false,
   chartPoints: [],
   hoverIndex: null,
 };
@@ -20,6 +20,8 @@ const els = {
   tableSearch: document.getElementById("tableSearch"),
   controlGrid: document.querySelector(".control-grid"),
   loadingOverlay: document.getElementById("loadingOverlay"),
+  loadingMessage: document.getElementById("loadingMessage"),
+  filterStatus: document.getElementById("filterStatus"),
   errorToast: document.getElementById("errorToast"),
   usageChart: document.getElementById("usageChart"),
   mixChart: document.getElementById("mixChart"),
@@ -40,7 +42,11 @@ const text = {
   cacheRatio: document.getElementById("cacheRatio"),
   uncachedInput: document.getElementById("uncachedInput"),
   estimatedCost: document.getElementById("estimatedCost"),
+  officialCost: document.getElementById("officialCost"),
+  assumedCostRow: document.getElementById("assumedCostRow"),
+  assumedCost: document.getElementById("assumedCost"),
   costSub: document.getElementById("costSub"),
+  pricingWarning: document.getElementById("pricingWarning"),
   mainChartTitle: document.getElementById("mainChartTitle"),
   mainChartMeta: document.getElementById("mainChartMeta"),
   scanMeta: document.getElementById("scanMeta"),
@@ -49,11 +55,18 @@ const text = {
   requestCount: document.getElementById("requestCount"),
   fileCount: document.getElementById("fileCount"),
   globalDedupe: document.getElementById("globalDedupe"),
+  assumedBlock: document.getElementById("assumedBlock"),
+  assumedModelList: document.getElementById("assumedModelList"),
+  unpricedBlock: document.getElementById("unpricedBlock"),
+  unpricedModelList: document.getElementById("unpricedModelList"),
 };
 
 const tableBody = document.getElementById("usageTable");
 const dateGroups = new Set(["day", "month"]);
 let sortUserSelected = false;
+let requestController = null;
+let requestSequence = 0;
+let filterDebounce = null;
 const chartSans =
   '"Noto Sans SC", "Fira Sans", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", sans-serif';
 const chartMono =
@@ -106,10 +119,17 @@ function durationMs(value) {
   return `${(n / 1000).toFixed(1)}s`;
 }
 
-function setLoading(value) {
-  state.loading = value;
+function setBlockingLoading(value, message = "正在读取本地索引") {
+  state.blockingLoading = value;
   els.loadingOverlay.hidden = !value;
-  els.refreshButton.disabled = value;
+  els.loadingMessage.textContent = message;
+  for (const control of els.controlGrid.querySelectorAll("select, input, button")) {
+    control.disabled = value;
+  }
+}
+
+function setFilterLoading(value) {
+  els.filterStatus.hidden = !value;
 }
 
 function showError(message) {
@@ -161,22 +181,55 @@ function shouldAutoPreferDesc(group, sort, direction) {
   return true;
 }
 
-async function loadData() {
+async function loadData({ refreshIndex = false, blocking = false } = {}) {
   syncControls();
-  setLoading(true);
+  window.clearTimeout(filterDebounce);
+  filterDebounce = null;
+  requestController?.abort();
+  requestController = new AbortController();
+  const requestId = ++requestSequence;
+  if (blocking) {
+    setFilterLoading(false);
+    setBlockingLoading(
+      true,
+      refreshIndex ? "正在刷新本地索引并统计" : "正在读取本地索引",
+    );
+  } else {
+    if (state.blockingLoading) setBlockingLoading(false);
+    setFilterLoading(true);
+  }
   try {
-    const response = await fetch(`/api/usage?${buildQuery().toString()}`, { cache: "no-store" });
+    const query = buildQuery();
+    query.set("refreshIndex", refreshIndex ? "1" : "0");
+    const response = await fetch(`/api/usage?${query.toString()}`, {
+      cache: "no-store",
+      signal: requestController.signal,
+    });
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.error || "用量 API 请求失败");
     }
+    if (requestId !== requestSequence) return;
     state.data = payload;
     state.rows = payload.rows || [];
     render();
   } catch (error) {
+    if (error.name === "AbortError") return;
     showError(error.message);
   } finally {
-    setLoading(false);
+    if (requestId === requestSequence) {
+      if (blocking) setBlockingLoading(false);
+      else setFilterLoading(false);
+    }
+  }
+}
+
+function applyFilters({ debounce = false } = {}) {
+  window.clearTimeout(filterDebounce);
+  if (debounce) {
+    filterDebounce = window.setTimeout(() => loadData(), 200);
+  } else {
+    loadData();
   }
 }
 
@@ -196,16 +249,24 @@ function render() {
   text.totalTokens.textContent = compactNumber(totals.total_tokens);
   text.totalSub.textContent = `${fullNumber(totals.requests)} 次请求`;
   text.inputTokens.textContent = compactNumber(totals.input_tokens);
-  text.cachedInput.textContent = `${compactNumber(totals.cached_input_tokens)} 缓存输入`;
+  text.cachedInput.textContent = `${compactNumber(totals.cached_input_tokens)} 命中 · ${compactNumber(totals.cache_write_input_tokens)} 写入`;
   text.outputTokens.textContent = compactNumber(totals.output_tokens);
   text.reasoningOutput.textContent = `${compactNumber(totals.reasoning_output_tokens)} 推理输出`;
   text.cacheRatio.textContent = percent(totals.cache_hit_ratio);
-  text.uncachedInput.textContent = `${compactNumber(totals.uncached_input_tokens)} 未缓存输入`;
-  text.estimatedCost.textContent = money(totals.estimated_cost_usd);
-  text.costSub.textContent =
-    Number(totals.unpriced_total_tokens || 0) > 0
-      ? `${compactNumber(totals.unpriced_total_tokens)} Token 未计价`
-      : "官方 API 标准价估算";
+  text.uncachedInput.textContent = `${compactNumber(totals.uncached_input_tokens)} 普通输入`;
+  text.estimatedCost.textContent = money(totals.reference_total_cost_usd);
+  text.estimatedCost.title = `参考区间 ${moneyRange(
+    totals.reference_total_cost_usd,
+    totals.reference_total_upper_bound_cost_usd,
+  )}`;
+  text.officialCost.textContent = money(totals.estimated_cost_usd);
+  text.assumedCostRow.hidden = Number(totals.assumed_requests || 0) === 0;
+  text.assumedCost.textContent = moneyRange(
+    totals.assumed_cost_usd,
+    totals.assumed_upper_bound_cost_usd,
+  );
+  text.costSub.textContent = costFootnote(totals, data.pricing);
+  renderPricingWarning(data.pricing);
 
   text.sessionCount.textContent = fullNumber(totals.sessions);
   text.requestCount.textContent = fullNumber(totals.requests);
@@ -222,7 +283,47 @@ function render() {
   renderMainLegend(data.group, data.sort);
   renderMainChart(data.rows || [], data.group, data.sort);
   renderMixChart(totals);
+  renderAssumedModels(data.assumedModels || []);
+  renderUnpricedModels(data.unpricedModels || []);
   renderTable();
+}
+
+function costFootnote(totals, pricing) {
+  const status = {
+    fresh: "实时",
+    cached: "缓存",
+    partial: "部分刷新",
+  }[pricing?.refreshStatus] || "本地目录";
+  const checkedAt = pricing?.checkedAt
+    ? `${pricing.checkedAt.slice(5, 16).replace("T", " ")} UTC`
+    : "未校验";
+  const parts = [`按事件发生时 Standard API 价格估算`, `${status} ${checkedAt}`];
+  if (Number(totals.provisional_priced_requests || 0) > 0) {
+    parts.push(
+      `${fullNumber(totals.provisional_priced_requests)} 次 provisional · ${money(totals.provisional_estimated_cost_usd)}`,
+    );
+  }
+  if (Number(totals.unpriced_total_tokens || 0) > 0) {
+    parts.push(`${compactNumber(totals.unpriced_total_tokens)} Token 未计价`);
+  }
+  return parts.join(" · ");
+}
+
+function renderPricingWarning(pricing) {
+  if (!text.pricingWarning) return;
+  text.pricingWarning.hidden = !pricing?.usedFallback;
+  text.pricingWarning.textContent = pricing?.usedFallback
+    ? "官方价格刷新未完整成功，当前使用最近一次已验证的本地目录。"
+    : "";
+  text.pricingWarning.title = pricing?.warning || "";
+}
+
+function moneyRange(lower, upper) {
+  const lowerValue = Number(lower || 0);
+  const upperValue = Number(upper || 0);
+  return Math.abs(lowerValue - upperValue) < 1e-9
+    ? money(lowerValue)
+    : `${money(lowerValue)}–${money(upperValue)}`;
 }
 
 function renderMainLegend(group, sort) {
@@ -233,7 +334,7 @@ function renderMainLegend(group, sort) {
         ["legend-input", "输入"],
         ["legend-output", "输出"],
       ]
-    : [[sort === "cost" ? "swatch reasoning" : "legend-total", sort === "cost" ? "金额" : "总量"]];
+    : [[sort === "cost" ? "swatch reasoning" : "legend-total", sort === "cost" ? "参考金额" : "总量"]];
   els.mainLegend.innerHTML = items.map(([className, label]) => `<span><i class="${className}"></i>${label}</span>`).join("");
 }
 
@@ -276,21 +377,113 @@ function dedupeName(scope) {
 }
 
 function scanSummary(stats) {
-  const parts = [`${fullNumber(stats.rawTokenEvents)} 条原始 token 事件`];
-  if (Number.isFinite(Number(stats.scanDurationMs))) {
-    parts.push(`扫描 ${durationMs(stats.scanDurationMs)}`);
+  const parts = [`${fullNumber(stats.rawTokenEvents)} 条 Token 事件`];
+  if (stats.queryCacheHit) {
+    parts.push("查询缓存命中");
+  } else if (stats.costCacheHit) {
+    parts.push("计价切片命中");
+  } else if (stats.indexRefreshSkipped) {
+    parts.push("读取 SQLite 缓存");
   }
-  if (Number.isFinite(Number(stats.changedFiles)) && Number.isFinite(Number(stats.files))) {
-    parts.push(`重扫 ${fullNumber(stats.changedFiles)} / ${fullNumber(stats.files)} 个文件`);
+  const phases = [];
+  if (Number.isFinite(Number(stats.scanDurationMs))) {
+    phases.push(`索引 ${durationMs(stats.scanDurationMs)}`);
+  }
+  if (Number.isFinite(Number(stats.dedupeDurationMs))) {
+    phases.push(`去重 ${durationMs(stats.dedupeDurationMs)}`);
+  }
+  if (Number.isFinite(Number(stats.aggregationDurationMs))) {
+    phases.push(`聚合 ${durationMs(stats.aggregationDurationMs)}`);
+  }
+  if (phases.length > 0) {
+    parts.push(phases.join(" / "));
+  }
+  if (Number.isFinite(Number(stats.totalDurationMs))) {
+    parts.push(`总计 ${durationMs(stats.totalDurationMs)}`);
+  }
+  if (
+    !stats.indexRefreshSkipped &&
+    Number.isFinite(Number(stats.changedFiles)) &&
+    Number.isFinite(Number(stats.files))
+  ) {
+    parts.push(
+      `更新 ${fullNumber(stats.changedFiles)}/${fullNumber(stats.files)} 个文件` +
+        `（增量 ${fullNumber(stats.incrementalFiles)}，完整 ${fullNumber(stats.fullRescanFiles)}）`,
+    );
   }
   return parts.join(" · ");
+}
+
+function renderUnpricedModels(models) {
+  if (!text.unpricedBlock || !text.unpricedModelList) return;
+  text.unpricedBlock.hidden = models.length === 0;
+  if (!models.length) {
+    text.unpricedModelList.innerHTML = "";
+    return;
+  }
+  text.unpricedModelList.innerHTML = models
+    .slice(0, 8)
+    .map(
+      (row) => `
+        <div class="model-price-card" title="${escapeHtml(row.model)}">
+          <div class="model-price-route">
+            <b>${escapeHtml(row.model)}</b>
+            <em>未计价</em>
+          </div>
+          <div class="model-price-estimate">
+            <strong>${fullNumber(row.total_tokens)} Token</strong>
+            <em>${fullNumber(row.requests)} 次请求</em>
+          </div>
+        </div>`,
+    )
+    .join("");
+}
+
+function renderAssumedModels(models) {
+  if (!text.assumedBlock || !text.assumedModelList) return;
+  text.assumedBlock.hidden = models.length === 0;
+  if (!models.length) {
+    text.assumedModelList.innerHTML = "";
+    return;
+  }
+  const routes = models
+    .flatMap((row) =>
+      (row.routes?.length ? row.routes : [row]).map((route) => ({ ...route, model: row.model })),
+    )
+    .slice(0, 12);
+  text.assumedModelList.innerHTML = routes
+    .map(
+      (row) => `
+        <div class="model-price-card" title="${escapeHtml(row.label || "参考估算")}">
+          <div class="model-price-route">
+            <b>${escapeHtml(row.model)}</b>
+            <em>${escapeHtml(row.effectiveFrom ? `自 ${row.effectiveFrom.slice(0, 10)}` : "历史基线")}</em>
+          </div>
+          <div class="assumption-models">
+            <span><i>基线</i><b>${escapeHtml(row.assumedModel || "--")}</b></span>
+            <span><i>上界</i><b>${escapeHtml(row.upperBoundModel || "--")}</b></span>
+          </div>
+          <div class="model-price-estimate">
+            <strong>${moneyRange(row.assumed_cost_usd, row.assumed_upper_bound_cost_usd)}</strong>
+            <em>${fullNumber(row.total_tokens)} Token · ${fullNumber(row.requests)} 次${row.evidenceLevel ? ` · ${escapeHtml(evidenceLabel(row.evidenceLevel))}` : ""}</em>
+          </div>
+        </div>`,
+    )
+    .join("");
+}
+
+function evidenceLabel(value) {
+  return {
+    "official-product-description": "官方说明",
+    "openai-community-announcement": "社区公告",
+  }[value] || value;
 }
 
 function renderTable() {
   const needle = els.tableSearch.value.trim().toLowerCase();
   const rows = state.rows.filter((row) => !needle || String(row.key).toLowerCase().includes(needle));
   if (!rows.length) {
-    tableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">暂无数据</td></tr>';
+    tableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">暂无数据</td></tr>';
     return;
   }
   tableBody.innerHTML = rows
@@ -303,9 +496,11 @@ function renderTable() {
           <td>${fullNumber(row.total_tokens)}</td>
           <td>${fullNumber(row.input_tokens)}</td>
           <td>${fullNumber(row.cached_input_tokens)}</td>
+          <td>${fullNumber(row.cache_write_input_tokens)}</td>
           <td>${fullNumber(row.output_tokens)}</td>
           <td>${fullNumber(row.reasoning_output_tokens)}</td>
           <td title="${escapeHtml(costTitle(row))}">${money(row.estimated_cost_usd)}</td>
+          <td title="${escapeHtml(costTitle(row))}">${money(row.reference_total_cost_usd)}</td>
           <td>${percent(row.cache_hit_ratio)}</td>
         </tr>`,
     )
@@ -321,7 +516,13 @@ function escapeHtml(value) {
 }
 
 function costTitle(row) {
-  const parts = [`预估金额 ${money(row.estimated_cost_usd)}`];
+  const parts = [`官方金额 ${money(row.estimated_cost_usd)}`];
+  if (Number(row.assumed_requests || 0) > 0) {
+    parts.push(`假设金额 ${money(row.assumed_cost_usd)}–${money(row.assumed_upper_bound_cost_usd)}`);
+  }
+  parts.push(
+    `参考合计 ${money(row.reference_total_cost_usd)}–${money(row.reference_total_upper_bound_cost_usd)}`,
+  );
   if (Number(row.unpriced_total_tokens || 0) > 0) {
     parts.push(`${fullNumber(row.unpriced_total_tokens)} Token 未计价`);
   }
@@ -355,7 +556,7 @@ function renderMainChart(rows, group, sort = "total") {
     drawTrend(ctx, width, height, [...rows].sort(compareDateRowsAsc));
   } else {
     state.hoverIndex = null;
-    drawBars(ctx, width, height, rows.slice(0, 18), sort === "cost" ? "estimated_cost_usd" : "total_tokens");
+    drawBars(ctx, width, height, rows.slice(0, 18), sort === "cost" ? "reference_total_cost_usd" : "total_tokens");
   }
 }
 
@@ -387,7 +588,7 @@ function drawBars(ctx, width, height, rows, metric = "total_tokens") {
   const pad = { top: 8, right: 22, bottom: 16, left: 150 };
   const chartW = width - pad.left - pad.right;
   const rowH = Math.max(16, Math.min(28, (height - pad.top - pad.bottom) / Math.max(rows.length, 1)));
-  const isCost = metric === "estimated_cost_usd";
+  const isCost = metric.endsWith("_cost_usd");
   const max = Math.max(...rows.map((row) => Number(row[metric] || 0)), 1);
   state.chartPoints = [];
   hideChartTooltip();
@@ -635,10 +836,12 @@ function renderMixChart(totals) {
   const centerX = width / 2;
   const centerY = height / 2;
   const radius = Math.min(width, height) * 0.35;
+  const regularOutput = Math.max(0, Number(totals.output_tokens || 0) - Number(totals.reasoning_output_tokens || 0));
   const values = [
     { value: totals.uncached_input_tokens || 0, color: chartColors.cyan },
     { value: totals.cached_input_tokens || 0, color: chartColors.green },
-    { value: totals.output_tokens || 0, color: chartColors.amber },
+    { value: totals.cache_write_input_tokens || 0, color: chartColors.blue },
+    { value: regularOutput, color: chartColors.amber },
     { value: totals.reasoning_output_tokens || 0, color: chartColors.rose },
   ];
   const sum = values.reduce((acc, item) => acc + item.value, 0) || 1;
@@ -713,9 +916,11 @@ function showChartTooltip(point, rect) {
     <strong>${escapeHtml(row.key)}</strong>
     <span>总量 <em>${fullNumber(row.total_tokens)}</em></span>
     <span>输入 <em>${fullNumber(row.input_tokens)}</em></span>
+    <span>缓存写入 <em>${fullNumber(row.cache_write_input_tokens)}</em></span>
     <span>输出 <em>${fullNumber(row.output_tokens)}</em></span>
     <span>推理 <em>${fullNumber(row.reasoning_output_tokens)}</em></span>
-    <span>金额 <em>${money(row.estimated_cost_usd)}</em></span>
+    <span>参考金额 <em>${money(row.reference_total_cost_usd)}</em></span>
+    <span>官方金额 <em>${money(row.estimated_cost_usd)}</em></span>
     <span>缓存率 <em>${percent(row.cache_hit_ratio)}</em></span>
   `;
   els.chartTooltip.style.left = `${clamp(point.x, 104, rect.width - 104)}px`;
@@ -727,18 +932,26 @@ function hideChartTooltip() {
   if (els.chartTooltip) els.chartTooltip.hidden = true;
 }
 
-["change", "input"].forEach((eventName) => {
-  els.rangeSelect.addEventListener(eventName, syncControls);
-  els.groupSelect.addEventListener(eventName, () => {
-    syncControls();
-    syncSortForGroup();
-  });
+els.sourceSelect.addEventListener("change", () => applyFilters());
+els.rangeSelect.addEventListener("change", () => {
+  syncControls();
+  applyFilters();
+});
+els.groupSelect.addEventListener("change", () => {
+  syncSortForGroup();
+  applyFilters();
 });
 
 els.sortSelect.addEventListener("change", () => {
   sortUserSelected = true;
+  applyFilters();
 });
-els.refreshButton.addEventListener("click", loadData);
+els.directionSelect.addEventListener("change", () => applyFilters());
+els.dedupeSelect.addEventListener("change", () => applyFilters());
+els.limitInput.addEventListener("input", () => applyFilters({ debounce: true }));
+els.fromInput.addEventListener("input", () => applyFilters({ debounce: true }));
+els.toInput.addEventListener("input", () => applyFilters({ debounce: true }));
+els.refreshButton.addEventListener("click", () => loadData({ refreshIndex: true, blocking: true }));
 els.tableSearch.addEventListener("input", renderTable);
 els.usageChart.addEventListener("mousemove", handleChartMove);
 els.usageChart.addEventListener("mouseleave", () => {
@@ -752,7 +965,7 @@ window.addEventListener("resize", () => {
 
 syncControls();
 syncSortForGroup({ force: true });
-loadData();
+loadData({ blocking: true });
 
 if (document.fonts?.ready) {
   document.fonts.ready.then(() => {
