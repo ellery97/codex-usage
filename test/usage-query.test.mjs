@@ -32,8 +32,7 @@ test("API defaults to index refresh while refreshIndex=0 uses registered source 
 
 test("rolling web ranges reuse one minute bucket and expire at the next minute", async (t) => {
   const fixture = await usageFixture(t);
-  const index = await openUsageIndex({ dbPath: fixture.dbPath, scanCheckTtlMs: 0, enableGc: false });
-  t.after(() => closeUsageIndex(index));
+  const { index } = fixture;
   await ensureFreshIndex(index, [fixture.sessionsDir], { force: true });
   const service = createUsageQueryService(index);
   const searchParams = new URLSearchParams({
@@ -84,8 +83,7 @@ test("today follows the target timezone across midnight and DST regardless of ar
   assert.equal(nextDay.fromMs - todayFirst.fromMs, 23 * 60 * 60 * 1000);
 
   const fixture = await usageFixture(t);
-  const index = await openUsageIndex({ dbPath: fixture.dbPath, scanCheckTtlMs: 0, enableGc: false });
-  t.after(() => closeUsageIndex(index));
+  const { index } = fixture;
   await ensureFreshIndex(index, [fixture.sessionsDir], { force: true });
   const service = createUsageQueryService(index);
   const base = options(fixture.sessionsDir);
@@ -134,8 +132,7 @@ test("absolute and unbounded web ranges do not depend on the injected clock", ()
 
 test("cache-only filters keep the indexed snapshot until an explicit refresh", async (t) => {
   const fixture = await usageFixture(t);
-  const index = await openUsageIndex({ dbPath: fixture.dbPath, scanCheckTtlMs: 0, enableGc: false });
-  t.after(() => closeUsageIndex(index));
+  const { index } = fixture;
   await ensureFreshIndex(index, [fixture.sessionsDir], { force: true });
   const service = createUsageQueryService(index);
 
@@ -170,8 +167,7 @@ test("cache-only filters keep the indexed snapshot until an explicit refresh", a
 
 test("group, sort, and limit changes reuse one costed event slice", async (t) => {
   const fixture = await usageFixture(t);
-  const index = await openUsageIndex({ dbPath: fixture.dbPath, scanCheckTtlMs: 0, enableGc: false });
-  t.after(() => closeUsageIndex(index));
+  const { index } = fixture;
   await ensureFreshIndex(index, [fixture.sessionsDir], { force: true });
   const service = createUsageQueryService(index);
 
@@ -194,8 +190,7 @@ test("group, sort, and limit changes reuse one costed event slice", async (t) =>
 
 test("query result cache evicts the least recently used entry", async (t) => {
   const fixture = await usageFixture(t);
-  const index = await openUsageIndex({ dbPath: fixture.dbPath, scanCheckTtlMs: 0, enableGc: false });
-  t.after(() => closeUsageIndex(index));
+  const { index } = fixture;
   await ensureFreshIndex(index, [fixture.sessionsDir], { force: true });
   const service = createUsageQueryService(index, { maxEntries: 2 });
   const base = options(fixture.sessionsDir);
@@ -211,7 +206,11 @@ test("query result cache evicts the least recently used entry", async (t) => {
 
 test("web startup indexes logs before refreshing newly observed models", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-dashboard-startup-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  let dashboard = null;
+  t.after(async () => {
+    closeUsageIndex(dashboard?.usageIndex);
+    await rm(directory, { recursive: true, force: true });
+  });
   const previousCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = directory;
   t.after(() => {
@@ -226,7 +225,7 @@ test("web startup indexes logs before refreshing newly observed models", async (
     sessionText("fresh-model", "new-valid-model", directory, usage(100, 10)),
   );
   let refreshedModels = null;
-  const dashboard = await initializeDashboard({
+  dashboard = await initializeDashboard({
     dbPath: path.join(directory, "cache.sqlite"),
     enableGc: false,
     initializePricingImpl: async () => {},
@@ -235,7 +234,6 @@ test("web startup indexes logs before refreshing newly observed models", async (
       return { warning: null, refreshStatus: "fresh" };
     },
   });
-  t.after(() => closeUsageIndex(dashboard.usageIndex));
 
   assert.equal(dashboard.startupSync.changedFiles, 1);
   assert.deepEqual(refreshedModels, ["new-valid-model"]);
@@ -256,12 +254,18 @@ test("web startup indexes logs before refreshing newly observed models", async (
 
 async function usageFixture(t) {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-query-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  let index = null;
+  t.after(async () => {
+    closeUsageIndex(index);
+    await rm(directory, { recursive: true, force: true });
+  });
   const sessionsDir = path.join(directory, "sessions");
   const sessionFile = path.join(sessionsDir, "rollout.jsonl");
+  const dbPath = path.join(directory, "cache.sqlite");
   await mkdir(sessionsDir, { recursive: true });
   await writeFile(sessionFile, sessionText("session", "gpt-5.6-luna", directory, usage(100, 10)));
-  return { directory, sessionsDir, sessionFile, dbPath: path.join(directory, "cache.sqlite") };
+  index = await openUsageIndex({ dbPath, scanCheckTtlMs: 0, enableGc: false });
+  return { directory, sessionsDir, sessionFile, dbPath, index };
 }
 
 function options(sessionsDir) {
