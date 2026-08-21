@@ -45,10 +45,18 @@ jobs:
             git diff --check "${{ github.event.before }}..${{ github.sha }}"
           fi
 
-  windows:
-    name: Windows tests
-    runs-on: windows-latest
+  platform:
+    name: ${{ matrix.label }} tests
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: macos-latest
+            label: macOS
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
