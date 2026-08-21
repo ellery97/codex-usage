@@ -1,7 +1,7 @@
 const state = {
   data: null,
   rows: [],
-  loading: false,
+  blockingLoading: false,
   chartPoints: [],
   hoverIndex: null,
 };
@@ -20,6 +20,8 @@ const els = {
   tableSearch: document.getElementById("tableSearch"),
   controlGrid: document.querySelector(".control-grid"),
   loadingOverlay: document.getElementById("loadingOverlay"),
+  loadingMessage: document.getElementById("loadingMessage"),
+  filterStatus: document.getElementById("filterStatus"),
   errorToast: document.getElementById("errorToast"),
   usageChart: document.getElementById("usageChart"),
   mixChart: document.getElementById("mixChart"),
@@ -62,6 +64,9 @@ const text = {
 const tableBody = document.getElementById("usageTable");
 const dateGroups = new Set(["day", "month"]);
 let sortUserSelected = false;
+let requestController = null;
+let requestSequence = 0;
+let filterDebounce = null;
 const chartSans =
   '"Noto Sans SC", "Fira Sans", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", sans-serif';
 const chartMono =
@@ -114,10 +119,17 @@ function durationMs(value) {
   return `${(n / 1000).toFixed(1)}s`;
 }
 
-function setLoading(value) {
-  state.loading = value;
+function setBlockingLoading(value, message = "正在读取本地索引") {
+  state.blockingLoading = value;
   els.loadingOverlay.hidden = !value;
-  els.refreshButton.disabled = value;
+  els.loadingMessage.textContent = message;
+  for (const control of els.controlGrid.querySelectorAll("select, input, button")) {
+    control.disabled = value;
+  }
+}
+
+function setFilterLoading(value) {
+  els.filterStatus.hidden = !value;
 }
 
 function showError(message) {
@@ -169,22 +181,55 @@ function shouldAutoPreferDesc(group, sort, direction) {
   return true;
 }
 
-async function loadData() {
+async function loadData({ refreshIndex = false, blocking = false } = {}) {
   syncControls();
-  setLoading(true);
+  window.clearTimeout(filterDebounce);
+  filterDebounce = null;
+  requestController?.abort();
+  requestController = new AbortController();
+  const requestId = ++requestSequence;
+  if (blocking) {
+    setFilterLoading(false);
+    setBlockingLoading(
+      true,
+      refreshIndex ? "正在刷新本地索引并统计" : "正在读取本地索引",
+    );
+  } else {
+    if (state.blockingLoading) setBlockingLoading(false);
+    setFilterLoading(true);
+  }
   try {
-    const response = await fetch(`/api/usage?${buildQuery().toString()}`, { cache: "no-store" });
+    const query = buildQuery();
+    query.set("refreshIndex", refreshIndex ? "1" : "0");
+    const response = await fetch(`/api/usage?${query.toString()}`, {
+      cache: "no-store",
+      signal: requestController.signal,
+    });
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.error || "用量 API 请求失败");
     }
+    if (requestId !== requestSequence) return;
     state.data = payload;
     state.rows = payload.rows || [];
     render();
   } catch (error) {
+    if (error.name === "AbortError") return;
     showError(error.message);
   } finally {
-    setLoading(false);
+    if (requestId === requestSequence) {
+      if (blocking) setBlockingLoading(false);
+      else setFilterLoading(false);
+    }
+  }
+}
+
+function applyFilters({ debounce = false } = {}) {
+  window.clearTimeout(filterDebounce);
+  if (debounce) {
+    filterDebounce = window.setTimeout(() => loadData(), 200);
+  } else {
+    loadData();
   }
 }
 
@@ -333,11 +378,38 @@ function dedupeName(scope) {
 
 function scanSummary(stats) {
   const parts = [`${fullNumber(stats.rawTokenEvents)} 条 Token 事件`];
-  if (Number.isFinite(Number(stats.scanDurationMs))) {
-    parts.push(`扫描 ${durationMs(stats.scanDurationMs)}`);
+  if (stats.queryCacheHit) {
+    parts.push("查询缓存命中");
+  } else if (stats.costCacheHit) {
+    parts.push("计价切片命中");
+  } else if (stats.indexRefreshSkipped) {
+    parts.push("读取 SQLite 缓存");
   }
-  if (Number.isFinite(Number(stats.changedFiles)) && Number.isFinite(Number(stats.files))) {
-    parts.push(`重扫 ${fullNumber(stats.changedFiles)} / ${fullNumber(stats.files)} 个文件`);
+  const phases = [];
+  if (Number.isFinite(Number(stats.scanDurationMs))) {
+    phases.push(`索引 ${durationMs(stats.scanDurationMs)}`);
+  }
+  if (Number.isFinite(Number(stats.dedupeDurationMs))) {
+    phases.push(`去重 ${durationMs(stats.dedupeDurationMs)}`);
+  }
+  if (Number.isFinite(Number(stats.aggregationDurationMs))) {
+    phases.push(`聚合 ${durationMs(stats.aggregationDurationMs)}`);
+  }
+  if (phases.length > 0) {
+    parts.push(phases.join(" / "));
+  }
+  if (Number.isFinite(Number(stats.totalDurationMs))) {
+    parts.push(`总计 ${durationMs(stats.totalDurationMs)}`);
+  }
+  if (
+    !stats.indexRefreshSkipped &&
+    Number.isFinite(Number(stats.changedFiles)) &&
+    Number.isFinite(Number(stats.files))
+  ) {
+    parts.push(
+      `更新 ${fullNumber(stats.changedFiles)}/${fullNumber(stats.files)} 个文件` +
+        `（增量 ${fullNumber(stats.incrementalFiles)}，完整 ${fullNumber(stats.fullRescanFiles)}）`,
+    );
   }
   return parts.join(" · ");
 }
@@ -860,18 +932,26 @@ function hideChartTooltip() {
   if (els.chartTooltip) els.chartTooltip.hidden = true;
 }
 
-["change", "input"].forEach((eventName) => {
-  els.rangeSelect.addEventListener(eventName, syncControls);
-  els.groupSelect.addEventListener(eventName, () => {
-    syncControls();
-    syncSortForGroup();
-  });
+els.sourceSelect.addEventListener("change", () => applyFilters());
+els.rangeSelect.addEventListener("change", () => {
+  syncControls();
+  applyFilters();
+});
+els.groupSelect.addEventListener("change", () => {
+  syncSortForGroup();
+  applyFilters();
 });
 
 els.sortSelect.addEventListener("change", () => {
   sortUserSelected = true;
+  applyFilters();
 });
-els.refreshButton.addEventListener("click", loadData);
+els.directionSelect.addEventListener("change", () => applyFilters());
+els.dedupeSelect.addEventListener("change", () => applyFilters());
+els.limitInput.addEventListener("input", () => applyFilters({ debounce: true }));
+els.fromInput.addEventListener("input", () => applyFilters({ debounce: true }));
+els.toInput.addEventListener("input", () => applyFilters({ debounce: true }));
+els.refreshButton.addEventListener("click", () => loadData({ refreshIndex: true, blocking: true }));
 els.tableSearch.addEventListener("input", renderTable);
 els.usageChart.addEventListener("mousemove", handleChartMove);
 els.usageChart.addEventListener("mouseleave", () => {
@@ -885,7 +965,7 @@ window.addEventListener("resize", () => {
 
 syncControls();
 syncSortForGroup({ force: true });
-loadData();
+loadData({ blocking: true });
 
 if (document.fonts?.ready) {
   document.fonts.ready.then(() => {

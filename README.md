@@ -26,8 +26,9 @@ token 用量、模型、工作目录和会话信息，不输出会话正文。
 - 按月、按天、按模型、按工作目录、按会话聚合 token 用量。
 - 支持全部时间、最近一段时间、今天、自定义起止日期统计。
 - 支持文本、JSON、CSV 三种命令行输出。
-- 提供本地 Web 页面，展示汇总卡片、Token 用量趋势、Token 构成、扫描状态和明细表。
-- Web 服务使用 SQLite 持久索引，首次扫描后复用索引，只增量重扫新增或变更过的会话文件。
+- 提供本地 Web 页面，展示汇总卡片、Token 用量趋势、Token 构成、索引刷新状态和明细表。
+- Web 服务使用 SQLite 持久索引；普通追加只读取新增字节，文件被替换或改写时才回退为完整重扫。
+- 全局去重代表事件按数据源范围持久化，筛选变化复用已计价切片和进程内查询缓存。
 - 按事件发生时间选择 OpenAI API Standard 价格版本，并区分官方金额、假设金额和未计价模型。
 - 在 WSL 环境下默认自动合并 Windows 侧 Codex 当前会话目录和归档会话目录。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
@@ -116,8 +117,18 @@ npm run web
 .codex-usage/cache.sqlite
 ```
 
-首次打开页面时会完整扫描历史 JSONL 文件并写入索引；之后刷新或切换范围、分组、排序时，
-服务会根据文件 `size` 和 `mtime` 判断哪些文件发生变化，只重扫变化文件。
+Web 服务会在监听端口前同步一次默认数据源、读取日志中实际出现的模型、刷新价格目录，并预热
+常用去重范围和默认 Dashboard 查询。没有索引时会完整扫描历史 JSONL；之后每个文件会保存读取偏移、
+解析上下文、inode 和边界哈希。安全追加只读取新增字节；截断、替换、同尺寸改写、边界哈希或扫描器
+版本不匹配时才完整重扫该文件。不完整的末尾 JSON 行会留到下次追加后处理。
+
+页面首次加载和筛选变化只查询当前 SQLite 快照，不访问 JSONL 文件。数据源、范围、分组、排序、方向
+和去重条件会自动应用，行数与自定义日期使用 200ms 防抖。服务启动后产生的新日志不会自动进入统计；
+点击“刷新索引”后才会检查文件、读取新增字节并清空查询缓存。
+
+全局去重结果按规范化的数据源目录组合持久化，文件变化后只修复受影响的累计 Token key，最多保留
+8 个最近使用的范围。旧索引会原地迁移且不会立刻重读全部历史 JSONL；旧文件第一次发生变化时允许
+完整重扫一次以建立可恢复解析状态，之后转为增量读取。
 页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换；Windows 口径包含当前会话和归档会话。
 
 `.codex-usage/` 已写入 `.gitignore`，不会提交到 Git。
@@ -181,6 +192,8 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | `--limit N` | 限制输出行数；`0` 表示不限制 |
 | `--dedupe-scope VALUE` | 去重范围：`global` 或 `file`，默认 `global` |
 | `--timezone`, `--tz TZ` | 日期分组使用的时区，默认本机时区 |
+| `--use-cache` | 使用与 Web 共用的 SQLite 增量索引；默认 CLI 仍为无状态完整扫描 |
+| `--cache-db PATH` | 指定 SQLite 索引路径，并隐含启用 `--use-cache` |
 | `--json` | 输出 JSON |
 | `--csv` | 输出 CSV |
 | `--no-refresh-pricing` | 不联网刷新价格，使用最近一次已验证的本地目录 |
@@ -333,6 +346,7 @@ GET /api/usage
 | `asc` / `desc` | `1` | 排序方向 |
 | `limit` | `60` | 输出行数 |
 | `dedupeScope` | `global` | 去重范围 |
+| `refreshIndex` | `0`、`1` | `0` 只查询 SQLite；`1` 先刷新索引。缺省为 `1`，保持外部 API 兼容 |
 
 示例：
 
@@ -342,6 +356,9 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 
 响应保留原有字段，并额外提供 `assumedModels`、`unpricedModels`、provisional 计价汇总，以及
 `pricing.mode = "event-time"`、`checkedAt`、`latestEffectiveFrom`、`refreshStatus` 和 `usedFallback`。
+`stats` 还包含 `indexRefreshSkipped`、`queryCacheHit`、`costCacheHit`、`scanDurationMs`、
+`dedupeDurationMs`、`aggregationDurationMs`、`totalDurationMs`、`incrementalFiles`、
+`fullRescanFiles` 和 `scannedBytes`。查询缓存命中时各阶段耗时为 `0`，`totalDurationMs` 始终是当前请求耗时。
 
 ## 项目结构
 
@@ -349,7 +366,11 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 .
 ├── bin/
 │   ├── codex-token-usage.mjs      # CLI 扫描与聚合逻辑
-│   ├── codex-usage-server.mjs     # 本地 Web 服务与 SQLite 索引
+│   ├── codex-usage-server.mjs     # 本地 Web 服务与启动预热
+│   ├── session-scanner.mjs        # 可恢复的增量 JSONL 扫描器
+│   ├── usage-index.mjs            # SQLite 索引、迁移与计价切片
+│   ├── usage-canonical.mjs        # 持久化全局去重范围
+│   ├── usage-query.mjs            # 查询结果 LRU 与缓存只读链路
 │   ├── openai-pricing.mjs         # 价格目录服务入口
 │   ├── pricing-catalog.mjs        # 版本选择和事件时点计价
 │   ├── pricing-refresh.mjs        # 官方模型 Markdown 校验与运行时缓存
@@ -384,8 +405,8 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 
 ### 首次打开 Web 页面为什么比较慢？
 
-首次启动需要完整扫描 `~/.codex/sessions` 下的历史 JSONL 文件，并写入 SQLite 索引。完成后，
-后续刷新会复用索引，只重扫新增或修改过的文件。
+首次启动且没有旧索引时需要完整扫描历史 JSONL。已有旧索引会原地迁移，不会因升级立即重读全部日志。
+完成后，普通追加只读取新增字节；只有文件被改写、替换或恢复状态失效时才完整重扫该文件。
 
 ### 会不会把会话内容上传出去？
 
@@ -400,8 +421,9 @@ JSONL 文件的原始记录。旧版 Codex 可能把历史 rollout 内容复制�
 
 ### 为什么 Web 和 CLI 的速度不同？
 
-CLI 每次运行都会直接扫描 JSONL 文件。Web 服务会维护 SQLite 持久索引，首次扫描后主要通过
-SQL 聚合，所以切换筛选条件和刷新通常更快。
+CLI 默认每次直接扫描 JSONL，也可通过 `--use-cache` 复用索引。Web 的筛选请求使用
+`refreshIndex=0`，只读取 SQLite、持久化全局去重结果、计价切片和最多 64 项查询结果缓存；只有
+“刷新索引”会访问日志文件，因此加载完成后的筛选不会再次走扫描流程。
 
 ## 开发验证
 
@@ -413,6 +435,9 @@ node --check bin/codex-usage-server.mjs
 node --check bin/openai-pricing.mjs
 node --check bin/pricing-catalog.mjs
 node --check bin/pricing-refresh.mjs
+node --check bin/session-scanner.mjs
+node --check bin/usage-index.mjs
+node --check bin/usage-query.mjs
 node --check public/app.js
 ```
 
@@ -420,6 +445,7 @@ node --check public/app.js
 
 ```bash
 npm run smoke
+npm run benchmark:index
 node ./bin/codex-token-usage.mjs --group month --limit 1
 node ./bin/codex-token-usage.mjs --group month --limit 1 --csv
 ```

@@ -23,6 +23,9 @@
       <div class="status-strip">
         <span id="rangeLabel">范围：全部</span>
         <span id="updatedLabel">更新时间：--</span>
+        <span id="filterStatus" class="filter-status" role="status" aria-live="polite" hidden>
+          正在应用筛选
+        </span>
       </div>
     </header>
 
@@ -104,7 +107,7 @@
             <path d="M21 12a9 9 0 0 1-15.4 6.36M3 12A9 9 0 0 1 18.4 5.64" />
             <path d="M21 5v7h-7M3 19v-7h7" />
           </svg>
-          <span>刷新</span>
+          <span>刷新索引</span>
         </button>
       </section>
 
@@ -182,15 +185,15 @@
         <article class="panel">
           <div class="panel-heading">
             <div>
-              <h2>扫描状态</h2>
+              <h2>索引刷新</h2>
               <p id="scanMeta">--</p>
             </div>
           </div>
           <div class="scan-grid">
-            <span>会话数<strong id="sessionCount">--</strong></span>
-            <span>请求数<strong id="requestCount">--</strong></span>
-            <span>文件数<strong id="fileCount">--</strong></span>
-            <span>全局去重<strong id="globalDedupe">--</strong></span>
+            <span><small>会话数</small><strong id="sessionCount">--</strong></span>
+            <span><small>请求数</small><strong id="requestCount">--</strong></span>
+            <span><small>文件数</small><strong id="fileCount">--</strong></span>
+            <span><small>全局去重</small><strong id="globalDedupe">--</strong></span>
           </div>
           <div id="assumedBlock" class="model-price-block" hidden>
             <div class="mini-heading">
@@ -252,7 +255,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 3a9 9 0 1 0 9 9" />
         </svg>
-        <span>正在扫描本地 Codex 会话</span>
+        <span id="loadingMessage">正在读取本地索引</span>
       </div>
     </div>
 

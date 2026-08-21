@@ -28,8 +28,9 @@ not printed or uploaded.
 - Aggregate token usage by month, day, model, working directory, or session.
 - Filter by all time, recent periods, today, or custom date ranges.
 - Export text, JSON, or CSV from the CLI.
-- View summary cards, usage trends, token composition, scan status, and detail tables in a local web dashboard.
-- Keep a persistent SQLite index and incrementally rescan only new or changed JSONL files.
+- View summary cards, usage trends, token composition, index-refresh status, and detail tables in a local web dashboard.
+- Keep a persistent SQLite index; safe appends read only new bytes and rewritten files fall back to a full rescan.
+- Persist global canonical events by source scope and reuse costed slices plus an in-process query cache.
 - Select OpenAI API Standard prices at each event timestamp and distinguish official, assumed, and unpriced usage.
 - Discover Windows current and archived Codex session directories under WSL.
 - Use global deduplication by default to reduce double counting from copied historical rollout content.
@@ -93,9 +94,22 @@ The equivalent direct command is:
 node --no-warnings --expose-gc ./bin/codex-usage-server.mjs
 ```
 
-The server serves the dashboard and aggregates data through a SQLite index at
-`.codex-usage/cache.sqlite` by default. The first scan processes historical JSONL files;
-later refreshes use file size and modification time to rescan only changed files.
+The server synchronizes the default source before listening, discovers models from the updated
+index, refreshes pricing, and prewarms common canonical scopes plus the default dashboard query.
+The index lives at `.codex-usage/cache.sqlite` by default. A new index scans historical JSONL files;
+later safe appends resume from a saved byte offset and parser context. Truncation, replacement,
+same-size rewrites, inode or boundary-hash changes, and scanner-version changes trigger a full
+rescan of that file. An incomplete trailing JSON line remains pending until the next append.
+
+Initial UI loading and filter changes use the current SQLite snapshot without touching JSONL.
+Source, range, grouping, sorting, direction, and deduplication apply automatically; row limits and
+custom dates use a 200ms debounce. New logs written after startup appear only after the user clicks
+**Refresh index**, which invalidates the cost and result caches.
+
+Global canonical representatives are persisted per normalized source-root set. Only dirty token
+keys are repaired after file changes, and at most eight recently used scopes are retained. Existing
+indexes migrate in place without immediately rereading historical JSONL; a changed legacy file may
+need one full rescan before later appends become incremental.
 
 The source selector supports all directories, WSL/Linux, and Windows (including archived sessions).
 `.codex-usage/` is ignored by Git and should never be committed.
@@ -162,6 +176,8 @@ Available options:
 | `--limit N` | Maximum number of rows; `0` means unlimited |
 | `--dedupe-scope VALUE` | `global` or `file`; defaults to `global` |
 | `--timezone`, `--tz TZ` | Timezone for date grouping |
+| `--use-cache` | Reuse the Web dashboard's incremental SQLite index |
+| `--cache-db PATH` | Select the SQLite index path and imply `--use-cache` |
 | `--json` | Output JSON |
 | `--csv` | Output CSV |
 | `--no-refresh-pricing` | Skip network refresh and use the latest validated local catalog |
@@ -290,7 +306,8 @@ GET /api/usage
 ```
 
 Common query parameters are `range`, `sourceScope`, `from`, `to`, `group`, `sort`, `asc`,
-`desc`, `limit`, and `dedupeScope`.
+`desc`, `limit`, `dedupeScope`, and `refreshIndex`. `refreshIndex=0` reads SQLite only;
+`refreshIndex=1` refreshes the index first. The default remains `1` for API compatibility.
 
 Example:
 
@@ -300,7 +317,9 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 
 The response keeps existing fields and adds `assumedModels`, `unpricedModels`, provisional-price
 totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffectiveFrom`,
-`refreshStatus`, and `usedFallback`.
+`refreshStatus`, and `usedFallback`. Performance metadata includes `indexRefreshSkipped`,
+`queryCacheHit`, `costCacheHit`, phase durations, incremental/full-rescan counts, and scanned bytes.
+On a result-cache hit, phase durations are zero and `totalDurationMs` measures the current request.
 
 ## Project structure
 
@@ -333,8 +352,9 @@ totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffe
 
 ### Why is the first web page load slow?
 
-The first start scans historical JSONL files and writes the SQLite index. Later refreshes reuse
-the index and rescan only new or modified files.
+A first start with no index scans historical JSONL. Existing indexes migrate in place without
+immediately rereading all logs. Safe appends later read only new bytes; rewritten or invalidated
+files fall back to a full rescan.
 
 ### Does the tool upload session content?
 
@@ -348,8 +368,9 @@ deduplicates only inside each JSONL file and is useful for inspecting raw file r
 
 ### Why is the web dashboard faster after the first run?
 
-The CLI scans JSONL files on every run. The web server maintains a persistent SQLite index and
-uses SQL aggregation for later filters and refreshes.
+The CLI scans JSONL by default and can reuse the index with `--use-cache`. Web filters send
+`refreshIndex=0` and reuse SQLite, persisted canonical events, one costed slice, and up to 64 query
+results. Only **Refresh index** checks session files.
 
 ## Development validation
 
@@ -361,7 +382,11 @@ node --check bin/codex-usage-server.mjs
 node --check bin/openai-pricing.mjs
 node --check bin/pricing-catalog.mjs
 node --check bin/pricing-refresh.mjs
+node --check bin/session-scanner.mjs
+node --check bin/usage-index.mjs
+node --check bin/usage-query.mjs
 node --check public/app.js
+npm run benchmark:index
 git diff --check
 ```
 

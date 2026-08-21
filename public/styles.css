@@ -160,6 +160,25 @@ button {
   box-shadow: var(--shadow-soft);
 }
 
+.filter-status {
+  color: var(--cyan);
+}
+
+.filter-status::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: filter-pulse 900ms ease-in-out infinite alternate;
+}
+
+.filter-status[hidden] {
+  display: none;
+}
+
 .shell {
   width: min(1440px, calc(100% - 32px));
   margin: 20px auto 50px;
@@ -553,25 +572,31 @@ canvas {
 
 .scan-grid {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .scan-grid span {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   color: var(--muted);
-  background: #ffffff;
+  background: linear-gradient(180deg, #ffffff, #fbfdfc);
+}
+
+.scan-grid small {
+  font-size: 12px;
 }
 
 .scan-grid strong {
   color: var(--ink);
   font-family: var(--font-mono);
+  font-size: 15px;
   font-weight: 700;
+  line-height: 1.15;
 }
 
 .model-price-block {
@@ -845,6 +870,12 @@ tbody tr:hover {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes filter-pulse {
+  to {
+    opacity: 0.3;
   }
 }
 
