@@ -563,20 +563,16 @@ async function refreshIndex(index, sessionsDirs, key) {
 function isUnchangedFile(cached, fileInfo) {
   if (
     !cached ||
+    Number(cached.scanner_version) !== SESSION_SCANNER_VERSION ||
     Number(cached.size) !== fileInfo.size ||
     Math.abs(Number(cached.mtime_ms) - fileInfo.mtimeMs) >= 0.001
   ) {
     return false;
   }
 
-  // Migrated rows intentionally remain lazy until their first observable change.
-  const isLegacyRow =
-    Number(cached.scanner_version) !== SESSION_SCANNER_VERSION &&
-    !cached.file_dev &&
-    !cached.file_ino;
   return (
-    isLegacyRow ||
-    (String(cached.file_dev || "") === fileInfo.dev && String(cached.file_ino || "") === fileInfo.ino)
+    String(cached.file_dev || "") === fileInfo.dev &&
+    String(cached.file_ino || "") === fileInfo.ino
   );
 }
 

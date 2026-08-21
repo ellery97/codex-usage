@@ -108,8 +108,10 @@ custom dates use a 200ms debounce. New logs written after startup appear only af
 
 Global canonical representatives are persisted per normalized source-root set. Only dirty token
 keys are repaired after file changes, and at most eight recently used scopes are retained. Existing
-indexes migrate in place without immediately rereading historical JSONL; a changed legacy file may
-need one full rescan before later appends become incremental.
+indexes migrate in place. When the stored scanner version is stale, the first index refresh after an
+upgrade fully rereads each existing JSONL file to recover cache-write values, six-field cumulative
+token keys, and resumable parser state. Each converted file commits independently; once conversion
+finishes, ordinary appends return to incremental reads.
 
 The source selector supports all directories, WSL/Linux, and Windows (including archived sessions).
 `.codex-usage/` is ignored by Git and should never be committed.
@@ -352,9 +354,11 @@ On a result-cache hit, phase durations are zero and `totalDurationMs` measures t
 
 ### Why is the first web page load slow?
 
-A first start with no index scans historical JSONL. Existing indexes migrate in place without
-immediately rereading all logs. Safe appends later read only new bytes; rewritten or invalidated
-files fall back to a full rescan.
+A first start with no index scans historical JSONL. Existing indexes migrate in place, but the first
+refresh after a scanner-version upgrade must fully reread each log to recover source fields and the
+correct deduplication key. A 23 GB history can therefore require about 23 GB of reads during that
+upgrade. Converted files commit independently, so an interrupted migration retries only stale files.
+Safe appends later read only new bytes; rewritten or invalidated files fall back to a full rescan.
 
 ### Does the tool upload session content?
 

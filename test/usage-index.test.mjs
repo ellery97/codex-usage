@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { buildUsagePayload } from "../bin/codex-token-usage.mjs";
+import { SESSION_SCANNER_VERSION } from "../bin/session-scanner.mjs";
 import {
   closeUsageIndex,
   ensureFreshIndex,
@@ -64,6 +65,160 @@ test("migrates old indexes in place without discarding derived rows", async (t) 
     assert.equal(index.db.prepare("SELECT scanner_version FROM files").get().scanner_version, 0);
     assert.equal(index.db.prepare("PRAGMA user_version").get().user_version, 3);
   } finally {
+    closeUsageIndex(index);
+  }
+});
+
+test("fully rebuilds unchanged legacy rows with current usage keys and cache writes", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-legacy-rebuild-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDir = path.join(directory, "sessions");
+  const dbPath = path.join(directory, "cache.sqlite");
+  const freshDbPath = path.join(directory, "fresh.sqlite");
+  await mkdir(sessionsDir, { recursive: true });
+
+  const usage = {
+    input_tokens: 1_000,
+    cached_input_tokens: 100,
+    cache_write_input_tokens: 200,
+    output_tokens: 100,
+    reasoning_output_tokens: 20,
+    total_tokens: 1_100,
+  };
+  const sessionFiles = ["a-rollout.jsonl", "b-rollout.jsonl"].map((name) =>
+    path.join(sessionsDir, name),
+  );
+  await Promise.all(
+    sessionFiles.map((filePath, index) =>
+      writeFile(filePath, sessionText(`legacy-${index}`, "gpt-5.6-luna", directory, usage)),
+    ),
+  );
+  const fileStats = await Promise.all(sessionFiles.map((filePath) => stat(filePath)));
+
+  const legacyDb = new DatabaseSync(dbPath);
+  legacyDb.exec(`
+    CREATE TABLE files (
+      path TEXT PRIMARY KEY,
+      size INTEGER NOT NULL,
+      mtime_ms REAL NOT NULL,
+      events_count INTEGER NOT NULL,
+      duplicate_token_events INTEGER NOT NULL,
+      parse_errors INTEGER NOT NULL,
+      raw_token_events INTEGER NOT NULL,
+      scanned_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE events (
+      id INTEGER PRIMARY KEY,
+      file_path TEXT NOT NULL,
+      event_index INTEGER NOT NULL,
+      timestamp_ms INTEGER,
+      session_created_at_ms INTEGER,
+      session_id TEXT NOT NULL,
+      total_usage_key TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      model TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL,
+      cached_input_tokens INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      reasoning_output_tokens INTEGER NOT NULL,
+      total_tokens INTEGER NOT NULL
+    );
+  `);
+  const insertLegacyFile = legacyDb.prepare(
+    "INSERT INTO files VALUES (?, ?, ?, 1, 0, 0, 1, ?)",
+  );
+  const insertLegacyEvent = legacyDb.prepare(
+    `INSERT INTO events VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  sessionFiles.forEach((filePath, index) => {
+    insertLegacyFile.run(filePath, fileStats[index].size, fileStats[index].mtimeMs, Date.now());
+    insertLegacyEvent.run(
+      index + 1,
+      filePath,
+      Date.parse("2026-08-19T00:00:01.000Z"),
+      Date.parse("2026-08-19T00:00:00.000Z"),
+      `legacy-${index}`,
+      `legacy-five-field-key-${index}`,
+      directory,
+      "gpt-5.6-luna",
+      usage.input_tokens,
+      usage.cached_input_tokens,
+      usage.output_tokens,
+      usage.reasoning_output_tokens,
+      usage.total_tokens,
+    );
+  });
+  legacyDb.close();
+
+  const options = usageOptions(sessionsDir);
+  const index = await openUsageIndex({ dbPath, scanCheckTtlMs: 0, enableGc: false });
+  const freshIndex = await openUsageIndex({ dbPath: freshDbPath, scanCheckTtlMs: 0, enableGc: false });
+  try {
+    const migratedSync = await ensureFreshIndex(index, [sessionsDir]);
+    assert.equal(migratedSync.fullRescanFiles, 2);
+    assert.equal(migratedSync.incrementalFiles, 0);
+    assert.equal(
+      migratedSync.scannedBytes,
+      fileStats.reduce((total, fileStat) => total + fileStat.size, 0),
+    );
+    assert.deepEqual(
+      index.db.prepare("SELECT DISTINCT scanner_version FROM files").all().map((row) => row.scanner_version),
+      [SESSION_SCANNER_VERSION],
+    );
+
+    const storedEvents = index.db
+      .prepare(
+        `SELECT total_usage_key, cache_write_input_tokens
+         FROM events
+         ORDER BY file_path, event_index`,
+      )
+      .all();
+    assert.deepEqual(
+      storedEvents.map((row) => ({ ...row })),
+      sessionFiles.map(() => ({
+        total_usage_key: "1000:100:200:100:20:1100",
+        cache_write_input_tokens: 200,
+      })),
+    );
+
+    const freshSync = await ensureFreshIndex(freshIndex, [sessionsDir]);
+    const [migratedPayload, freshPayload, directPayload] = await Promise.all([
+      Promise.resolve(usagePayloadFromIndex(index, migratedSync, options)),
+      Promise.resolve(usagePayloadFromIndex(freshIndex, freshSync, options)),
+      buildUsagePayload(options),
+    ]);
+    assert.deepEqual(migratedPayload.totals, freshPayload.totals);
+    assert.deepEqual(migratedPayload.totals, directPayload.totals);
+    assert.deepEqual(migratedPayload.rows, freshPayload.rows);
+    assert.deepEqual(migratedPayload.rows, directPayload.rows);
+    assert.equal(migratedPayload.totals.requests, 1);
+    assert.equal(migratedPayload.totals.cache_write_input_tokens, 200);
+    assert.equal(migratedPayload.totals.uncached_input_tokens, 700);
+    assert.equal(migratedPayload.stats.globalDuplicateTokenEvents, 1);
+
+    const unchangedSync = await ensureFreshIndex(index, [sessionsDir]);
+    assert.equal(unchangedSync.changedFiles, 0);
+    assert.equal(unchangedSync.fullRescanFiles, 0);
+    assert.equal(unchangedSync.cacheFiles, 2);
+
+    const nextUsage = {
+      input_tokens: 1_500,
+      cached_input_tokens: 200,
+      cache_write_input_tokens: 250,
+      output_tokens: 150,
+      reasoning_output_tokens: 30,
+      total_tokens: 1_650,
+    };
+    const appendedText = `${JSON.stringify(
+      tokenEvent("2026-08-19T00:00:02.000Z", nextUsage),
+    )}\n`;
+    await appendFile(sessionFiles[0], appendedText);
+    const appendedSync = await ensureFreshIndex(index, [sessionsDir]);
+    assert.equal(appendedSync.incrementalFiles, 1);
+    assert.equal(appendedSync.fullRescanFiles, 0);
+    assert.equal(appendedSync.scannedBytes, Buffer.byteLength(appendedText));
+  } finally {
+    closeUsageIndex(freshIndex);
     closeUsageIndex(index);
   }
 });
