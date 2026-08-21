@@ -898,6 +898,8 @@ async function serveStatic(req, res, pathname) {
 }
 
 const usageIndex = await openUsageIndex();
+const startupOptions = optionsFromQuery(new URLSearchParams());
+await ensureFreshIndex(usageIndex, startupOptions.sessionsDirs);
 await initializePricing({ dbPath: DB_PATH });
 const pricingRefresh = await refreshPricing({
   models: modelsInUsageIndex(usageIndex),

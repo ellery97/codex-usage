@@ -15,9 +15,14 @@ export const DEFAULT_PRICING_TIMEOUT_MS = 8000;
 export const DEFAULT_PRICING_CONCURRENCY = 6;
 const LOCK_STALE_MS = 30_000;
 
-export function modelPricingUrl(model) {
+export function normalizeRefreshableModelId(model) {
   const normalized = normalizeModelForPricing(model);
-  if (!/^[a-z0-9][a-z0-9._-]*$/.test(normalized)) {
+  return /^[a-z0-9][a-z0-9._-]*$/.test(normalized) ? normalized : null;
+}
+
+export function modelPricingUrl(model) {
+  const normalized = normalizeRefreshableModelId(model);
+  if (!normalized) {
     throw new Error(`Invalid model ID for pricing refresh: ${model}.`);
   }
   return `${OFFICIAL_MODEL_MARKDOWN_BASE}${encodeURIComponent(normalized)}.md`;
@@ -142,14 +147,23 @@ export async function refreshPricingSnapshot(snapshotInput, {
 } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("Pricing refresh requires fetch().");
   const snapshot = normalizePricingCatalog(snapshotInput);
-  const requestedModels = new Set(
-    [
-      ...(includeCatalogModels ? Object.keys(snapshot.models) : []),
-      ...Array.from(models, normalizeModelForPricing),
-    ].map((model) => snapshot.aliases[model] || model),
-  );
-  for (const assumedModel of Object.keys(snapshot.assumedRoutes)) requestedModels.delete(assumedModel);
-  requestedModels.delete("");
+  const requestedModels = new Set();
+  const skippedModels = new Set();
+  const candidates = [
+    ...(includeCatalogModels ? Object.keys(snapshot.models) : []),
+    ...Array.from(models || []),
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeModelForPricing(candidate);
+    if (snapshot.assumedRoutes[normalized]) continue;
+    const canonical = snapshot.aliases[normalized] || normalized;
+    const refreshable = normalizeRefreshableModelId(canonical);
+    if (!refreshable) {
+      skippedModels.add(normalized);
+      continue;
+    }
+    requestedModels.add(refreshable);
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error("Pricing refresh timed out.")), timeoutMs);
@@ -222,6 +236,7 @@ export async function refreshPricingSnapshot(snapshotInput, {
     changes,
     successes,
     failures,
+    skippedModels: Array.from(skippedModels).sort(),
     refreshStatus,
     usedFallback: failures.length > 0,
     warning:

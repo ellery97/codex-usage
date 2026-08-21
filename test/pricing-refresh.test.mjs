@@ -228,6 +228,27 @@ test("refreshes an observed official alias through its canonical model page", as
   assert.match(requested[0], /gpt-canonical\.md$/);
 });
 
+test("skips invalid observed model IDs without treating them as refresh failures", async () => {
+  const snapshot = oneModelCatalog("gpt-valid");
+  const requested = [];
+  const result = await refreshPricingSnapshot(snapshot, {
+    models: ["(unknown model)", "", "bad model", "GPT-VALID"],
+    includeCatalogModels: false,
+    fetchImpl: async (url) => {
+      requested.push(url);
+      return new Response(modelPage("gpt-valid"), { status: 200 });
+    },
+  });
+
+  assert.equal(requested.length, 1);
+  assert.match(requested[0], /gpt-valid\.md$/);
+  assert.deepEqual(result.skippedModels, ["", "(unknown model)", "bad model"]);
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.refreshStatus, "fresh");
+  assert.equal(result.usedFallback, false);
+  assert.equal(result.warning, null);
+});
+
 test("adds a changed price once as a first-observed provisional version", async () => {
   let snapshot = oneModelCatalog();
   const now = new Date("2026-08-19T12:34:56.000Z");
