@@ -144,11 +144,12 @@ function processSessionLine(filePath, line, state, seenTotals, events, stats, { 
   state.lastTotalUsage = totalUsage;
 
   const parsedTimestampMs = Date.parse(obj.timestamp || "");
-  const timestampMs = Number.isNaN(parsedTimestampMs) ? session.createdAtMs : parsedTimestampMs;
+  const hasEventTimestamp = !Number.isNaN(parsedTimestampMs);
+  const timestampMs = hasEventTimestamp ? parsedTimestampMs : session.createdAtMs;
   const cwd = state.context.cwd || session.cwd || "(unknown cwd)";
   const model = state.context.model || session.model || "(unknown model)";
   const eventFingerprint = usageEventFingerprint({
-    timestampMs,
+    timestampMs: hasEventTimestamp ? parsedTimestampMs : null,
     totalUsage,
     lastUsage: usage,
     fallbackIdentity: `${session.id}\0${cwd}\0${model}`,
