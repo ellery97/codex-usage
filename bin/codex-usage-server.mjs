@@ -38,6 +38,7 @@ const GROUPS = new Set(["none", "day", "month", "model", "cwd", "session"]);
 const SORTS = new Set(["key", "total", "input", "output", "cached", "reasoning", "requests", "sessions", "cost"]);
 const DEDUPE_SCOPES = new Set(["global", "file"]);
 const SOURCE_SCOPES = new Set(["all", "local", "windows"]);
+const RANGES = new Set(["all", "today", "24h", "7d", "30d", "12w", "custom"]);
 const RANGE_TO_LAST = new Map([
   ["24h", "24h"],
   ["7d", "7d"],
@@ -55,13 +56,26 @@ const MIME_TYPES = new Map([
   [".ico", "image/x-icon"],
 ]);
 
-function json(res, status, payload) {
+class HttpError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.name = "HttpError";
+    this.statusCode = statusCode;
+  }
+}
+
+function json(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...extraHeaders,
   });
   res.end(body);
+}
+
+function methodNotAllowed(res, allowed) {
+  json(res, 405, { error: "Method not allowed" }, { allow: allowed.join(", ") });
 }
 
 function clampInt(value, fallback, min, max) {
@@ -70,13 +84,21 @@ function clampInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, n));
 }
 
+function validateChoice(searchParams, name, allowed, fallback) {
+  const value = searchParams.get(name);
+  if (value == null || value === "") return fallback;
+  if (!allowed.has(value)) {
+    throw new HttpError(400, `Invalid ${name}: ${value}`);
+  }
+  return value;
+}
+
 function localSessionsDir() {
   return path.join(process.env.CODEX_HOME || path.join(homedir(), ".codex"), "sessions");
 }
 
 function sourceScopeFromQuery(searchParams) {
-  const value = searchParams.get("sourceScope") || "all";
-  return SOURCE_SCOPES.has(value) ? value : "all";
+  return validateChoice(searchParams, "sourceScope", SOURCE_SCOPES, "all");
 }
 
 function addWindowsSessionArgs(args) {
@@ -91,12 +113,17 @@ function addWindowsSessionArgs(args) {
 }
 
 function usageArgvFromQuery(searchParams, sourceRegistry = null) {
-  const group = searchParams.get("group") || "month";
-  const sort = searchParams.get("sort") || (group === "day" || group === "month" ? "key" : "total");
-  const dedupeScope = searchParams.get("dedupeScope") || "global";
-  const range = searchParams.get("range") || "all";
+  const group = validateChoice(searchParams, "group", GROUPS, "month");
+  const sort = validateChoice(
+    searchParams,
+    "sort",
+    SORTS,
+    group === "day" || group === "month" ? "key" : "total",
+  );
+  const dedupeScope = validateChoice(searchParams, "dedupeScope", DEDUPE_SCOPES, "global");
+  const range = validateChoice(searchParams, "range", RANGES, "all");
   const sourceScope = sourceScopeFromQuery(searchParams);
-  const args = ["--group", GROUPS.has(group) ? group : "month", "--sort", SORTS.has(sort) ? sort : "total"];
+  const args = ["--group", group, "--sort", sort];
 
   if (sourceRegistry) {
     for (const dir of sourceRegistry[sourceScope] || []) {
@@ -108,18 +135,28 @@ function usageArgvFromQuery(searchParams, sourceRegistry = null) {
     addWindowsSessionArgs(args);
   }
 
-  const limit = clampInt(searchParams.get("limit"), group === "cwd" || group === "session" ? 30 : 0, 0, 500);
+  const rawLimit = searchParams.get("limit");
+  if (rawLimit != null && rawLimit !== "" && !/^\d+$/.test(rawLimit)) {
+    throw new HttpError(400, `Invalid limit: ${rawLimit}`);
+  }
+  const limit = clampInt(rawLimit, group === "cwd" || group === "session" ? 30 : 0, 0, 500);
   if (limit > 0) {
     args.push("--limit", String(limit));
   }
 
-  if (DEDUPE_SCOPES.has(dedupeScope)) {
-    args.push("--dedupe-scope", dedupeScope);
-  }
+  args.push("--dedupe-scope", dedupeScope);
 
-  if (searchParams.get("desc") === "1" || searchParams.get("desc") === "true") {
+  const desc = searchParams.get("desc");
+  const asc = searchParams.get("asc");
+  if (desc != null && !["0", "1", "false", "true"].includes(desc)) {
+    throw new HttpError(400, `Invalid desc: ${desc}`);
+  }
+  if (asc != null && !["0", "1", "false", "true"].includes(asc)) {
+    throw new HttpError(400, `Invalid asc: ${asc}`);
+  }
+  if (desc === "1" || desc === "true") {
     args.push("--desc");
-  } else if (searchParams.get("asc") === "1" || searchParams.get("asc") === "true") {
+  } else if (asc === "1" || asc === "true") {
     args.push("--asc");
   }
 
@@ -130,8 +167,16 @@ function usageArgvFromQuery(searchParams, sourceRegistry = null) {
   } else if (range === "custom") {
     const from = searchParams.get("from");
     const to = searchParams.get("to");
+    if (!from && !to) {
+      throw new HttpError(400, "Custom range requires from and/or to");
+    }
     if (from) args.push("--from", from);
     if (to) args.push("--to", to);
+  }
+
+  const timezone = searchParams.get("timezone");
+  if (timezone) {
+    args.push("--timezone", timezone);
   }
 
   return args;
@@ -141,23 +186,40 @@ export function optionsFromQuery(
   searchParams,
   { sourceRegistry = null, nowMs = Date.now() } = {},
 ) {
-  const rangeKey = searchParams.get("range") || "all";
+  const rangeKey = validateChoice(searchParams, "range", RANGES, "all");
   const rangeNowMs = RANGE_TO_LAST.has(rangeKey)
     ? Math.floor(Number(nowMs) / RELATIVE_RANGE_BUCKET_MS) * RELATIVE_RANGE_BUCKET_MS
     : Number(nowMs);
-  const options = parseArgs(usageArgvFromQuery(searchParams, sourceRegistry), {
-    nowMs: rangeNowMs,
-  });
-  options.sourceScope = sourceScopeFromQuery(searchParams);
-  options.rangeKey = rangeKey;
-  return options;
+  try {
+    const options = parseArgs(usageArgvFromQuery(searchParams, sourceRegistry), {
+      nowMs: rangeNowMs,
+    });
+    options.sourceScope = sourceScopeFromQuery(searchParams);
+    options.rangeKey = rangeKey;
+    return options;
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, error.message);
+  }
 }
 
-export async function runUsage(queryService, searchParams, sourceRegistry = null) {
+export async function runUsage(
+  queryService,
+  searchParams,
+  sourceRegistry = null,
+  { refreshIndex = null } = {},
+) {
   const options = optionsFromQuery(searchParams, { sourceRegistry });
+  const requestedRefresh = searchParams.get("refreshIndex") === "1";
   return queryService.query(options, {
-    refreshIndex: searchParams.get("refreshIndex") !== "0",
+    // GET is read-only by default. refreshIndex=1 is retained temporarily for
+    // dashboard/backward compatibility; new callers should use POST /api/index/refresh.
+    refreshIndex: refreshIndex == null ? requestedRefresh : Boolean(refreshIndex),
   });
+}
+
+export async function refreshUsage(queryService, searchParams, sourceRegistry = null) {
+  return runUsage(queryService, searchParams, sourceRegistry, { refreshIndex: true });
 }
 
 export function discoverSourceRegistry() {
@@ -170,6 +232,10 @@ export function discoverSourceRegistry() {
 }
 
 async function serveStatic(req, res, pathname) {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    methodNotAllowed(res, ["GET", "HEAD"]);
+    return;
+  }
   const safePathname = pathname === "/" ? "/index.html" : pathname;
   const filePath = path.resolve(PUBLIC_DIR, safePathname.replace(/^\/+/, ""));
   if (filePath !== PUBLIC_DIR && !filePath.startsWith(`${PUBLIC_DIR}${path.sep}`)) {
@@ -184,7 +250,19 @@ async function serveStatic(req, res, pathname) {
       "content-type": MIME_TYPES.get(path.extname(filePath)) || "application/octet-stream",
       "cache-control": "no-cache",
     });
-    createReadStream(filePath).pipe(res);
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    const stream = createReadStream(filePath);
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        json(res, 500, { error: "Failed to read static asset" });
+      } else {
+        res.destroy();
+      }
+    });
+    stream.pipe(res);
   } catch {
     json(res, 404, { error: "Not found" });
   }
@@ -236,6 +314,10 @@ export async function startDashboard({ port = PORT, host = HOST, ...initializeOp
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
     try {
       if (url.pathname === "/api/usage") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, ["GET"]);
+          return;
+        }
         const payload = await runUsage(
           dashboard.queryService,
           url.searchParams,
@@ -244,9 +326,36 @@ export async function startDashboard({ port = PORT, host = HOST, ...initializeOp
         json(res, 200, payload);
         return;
       }
+      if (url.pathname === "/api/index/refresh") {
+        if (req.method !== "POST") {
+          methodNotAllowed(res, ["POST"]);
+          return;
+        }
+        const payload = await refreshUsage(
+          dashboard.queryService,
+          url.searchParams,
+          dashboard.sourceRegistry,
+        );
+        json(res, 200, payload);
+        return;
+      }
+      if (url.pathname === "/api/health") {
+        if (req.method !== "GET") {
+          methodNotAllowed(res, ["GET"]);
+          return;
+        }
+        json(res, 200, { ok: true });
+        return;
+      }
       await serveStatic(req, res, url.pathname);
     } catch (error) {
-      json(res, 500, { error: error.message });
+      const statusCode = Number(error?.statusCode || 500);
+      if (statusCode >= 500) {
+        console.error(`codex-usage-server: ${error.message}`);
+      }
+      json(res, statusCode, {
+        error: statusCode >= 500 ? "Internal server error" : error.message,
+      });
     }
   });
   server.once("close", () => closeUsageIndex(dashboard.usageIndex));
