@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const USAGE_FIELDS = [
   "input_tokens",
   "cached_input_tokens",
@@ -47,6 +49,28 @@ export function diffUsage(next, previous) {
 
 export function usageKey(usage) {
   return USAGE_FIELDS.map((field) => usage[field] || 0).join(":");
+}
+
+export function usageEventFingerprint({
+  timestampMs,
+  totalUsage,
+  lastUsage = null,
+  fallbackIdentity = null,
+} = {}) {
+  const validTimestamp = Number.isFinite(Number(timestampMs));
+  const identity = validTimestamp
+    ? {
+        timestamp_ms: Number(timestampMs),
+        total_usage: usageKey(totalUsage),
+        last_usage: lastUsage ? usageKey(lastUsage) : null,
+      }
+    : {
+        timestamp_ms: null,
+        total_usage: usageKey(totalUsage),
+        last_usage: lastUsage ? usageKey(lastUsage) : null,
+        fallback_identity: String(fallbackIdentity || "unknown"),
+      };
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
 }
 
 export function hasUsage(usage) {
