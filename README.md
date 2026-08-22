@@ -25,8 +25,8 @@
 `E:\mnt\c\...`。原生 Windows 会枚举已安装且可访问的 WSL 发行版及其 `/home/*` 用户目录；
 WSL/Linux 会检查可访问的 Windows 用户目录。
 
-工具只读取 `event_msg.token_count`、`turn_context` 和 `session_meta` 相关记录，用于还原
-token 用量、模型、工作目录和会话信息，不输出会话正文。
+工具只读取 `event_msg.token_count`、`event_msg.thread_settings_applied`、`turn_context` 和
+`session_meta` 相关记录，用于还原 token 用量、模型、工作目录和会话信息，不输出会话正文。
 启动时仅会访问固定的 OpenAI 官方模型文档地址校验公开价格，不会上传会话内容。
 
 ## 功能
@@ -38,6 +38,7 @@ token 用量、模型、工作目录和会话信息，不输出会话正文。
 - Web 服务使用 SQLite 持久索引；普通追加只读取新增字节，文件被替换或改写时才回退为完整重扫。
 - 全局去重代表事件按数据源范围持久化，筛选变化复用已计价切片和进程内查询缓存。
 - 按事件发生时间选择 OpenAI API Standard 价格版本，并区分官方金额、假设金额和未计价模型。
+- 真正缺失时间戳的事件在全量统计中仍会保留并计为未计价；带时间边界的查询会显式报告被排除数量。
 - 默认自动发现并合并 WSL/Linux 与 Windows 两侧的当前会话和归档会话目录。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
 
@@ -137,9 +138,9 @@ Web 服务会在监听端口前同步一次默认数据源、读取日志中实�
 Web 的 `24h`、`7d`、`30d` 和 `12w` 范围按当前时间的分钟桶滚动：同一分钟内可复用查询缓存，跨分钟
 会生成新的实际边界。`today` 按目标 IANA 时区的日期计算当天 0 点，并在该时区跨日时立即切换。
 
-全局去重结果按规范化的数据源目录组合持久化，文件变化后只修复受影响的累计 Token key，最多保留
+全局去重结果按规范化的数据源目录组合持久化，文件变化后只修复受影响的事件 key，最多保留
 8 个最近使用的范围。旧索引会原地迁移；如果索引中的扫描器版本已过期，升级后的首次索引刷新会逐文件
-完整重读现有 JSONL，以恢复 cache-write、六字段累计 Token key 和可恢复解析状态。每个文件转换成功后
+完整重读现有 JSONL，以恢复 cache-write、事件指纹、累计 Token key 后缀和可恢复解析状态。每个文件转换成功后
 立即提交，后续启动不会重复处理；全部转换完成后，普通追加恢复为增量读取。
 页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换；WSL/Linux 和 Windows
 口径都包含对应环境可访问的当前会话与归档会话。API 仍兼容 `sourceScope=local`，它表示运行时本地
@@ -220,8 +221,12 @@ Codex 会话文件里可能存在两类容易导致重复计数的情况：
 1. 同一个 JSONL 文件里重复写入相同累计值的 `token_count`。
 2. 较新的 rollout 文件中嵌入较早历史 rollout 的 token 事件。
 
-工具会先在单个文件内按累计 token 向量去重。默认 `--dedupe-scope global` 还会跨文件按
-累计 token 向量去重，避免历史事件被复制后重复累加。
+工具会先在单个文件内按累计 token 向量去重。默认 `--dedupe-scope global` 会进一步使用
+“事件时间戳 + 六字段累计 Token + 本次增量 Token”的事件指纹跨文件去重；当事件时间戳确实缺失时，
+指纹会额外包含会话/目录/模型回退身份，避免无关会话错误碰撞。
+
+Direct Scan 与 SQLite 使用同一套确定性 canonical 规则：按完整文件路径的二进制顺序，其次按文件内事件顺序
+选择代表事件。因此同一批数据无论 `--sessions` 参数的传入顺序如何，模型、cwd、session 和金额归属都保持一致。
 
 如果你希望查看每个 JSONL 文件自己的原始记录口径，可以使用：
 
@@ -229,8 +234,13 @@ Codex 会话文件里可能存在两类容易导致重复计数的情况：
 node ./bin/codex-token-usage.mjs --dedupe-scope file
 ```
 
-注意：全局去重会优先保留第一次出现的累计 token 事件，然后再做时间范围过滤。这个口径更适合
-看长期真实总量；如果你正在排查某个文件内部的原始日志，应改用 `file` 去重。
+全局去重会先确定 canonical 代表事件，再做时间范围过滤。这个口径更适合看长期真实总量；如果你正在排查
+某个文件内部的原始日志，应改用 `file` 去重。
+
+真正无法恢复时间戳的事件不会在全量统计中静默丢失：`range=all` / 无 `from`、`to` 时仍计入请求与 Token，
+金额按未计价处理；按天/月分组时进入 `(unknown time)`。一旦查询带有时间边界，因为无法判断这些事件是否位于
+区间内，它们会被排除，并通过 `stats.excludedUnknownTimestampEvents` 和
+`stats.excludedUnknownTimestampTokens` 明确报告。
 
 ## 字段说明
 
@@ -264,7 +274,7 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 
 ## 金额估算口径
 
-金额来自版本化价格目录，口径是 OpenAI API Standard 文本 Token 价格。每条事件按自身 UTC 时间选择不晚于它的最新有效版本；恰好位于价格边界时使用新版本。没有权威生效日的旧价格作为 `provisional` 历史基线，不会冒充正式变价日期。
+金额来自版本化价格目录，口径是 OpenAI API Standard 文本 Token 价格。每条有时间戳的事件按自身 UTC 时间选择不晚于它的最新有效版本；恰好位于价格边界时使用新版本。真正没有时间戳的事件无法安全选择历史价格版本，因此会保留在 Token 统计中但标记为未计价。没有权威生效日的旧价格作为 `provisional` 历史基线，不会冒充正式变价日期。
 
 内置历史位于 `pricing/openai-pricing.snapshot.json`，运行时校验结果写入数据库旁的 `.codex-usage/pricing-history.json`。Web 在监听端口前刷新；CLI 在聚合和输出前刷新，`--help` 不联网。刷新最多并发 6 个请求且受 8 秒总超时限制，并复用 `ETag` / `Last-Modified`。部分页面失败时，成功模型仍会更新，失败模型继续使用最近一次已验证版本；完全离线时也会回退本地目录。
 
@@ -343,11 +353,15 @@ CODEX_USAGE_SESSIONS="$HOME/.codex/sessions:/mnt/c/Users/<Windows用户名>/.cod
 
 ## API
 
-Web 服务提供一个 JSON 接口：
+Web 服务提供：
 
 ```text
 GET /api/usage
+POST /api/index/refresh
 ```
+
+`GET /api/usage` 缺省为只读 SQLite 快照，不触发索引刷新；兼容参数 `refreshIndex=1` 仍可显式请求刷新。
+新调用方应使用 `POST /api/index/refresh` 执行刷新，然后继续使用 GET 做查询。
 
 常用查询参数：
 
@@ -362,7 +376,7 @@ GET /api/usage
 | `asc` / `desc` | `1` | 排序方向 |
 | `limit` | `60` | 输出行数 |
 | `dedupeScope` | `global` | 去重范围 |
-| `refreshIndex` | `0`、`1` | `0` 只查询 SQLite；`1` 先刷新索引。缺省为 `1`，保持外部 API 兼容 |
+| `refreshIndex` | `0`、`1` | 兼容参数；缺省为 `0`（只读快照），`1` 显式刷新后查询 |
 
 示例：
 
@@ -374,17 +388,22 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 `pricing.mode = "event-time"`、`checkedAt`、`latestEffectiveFrom`、`refreshStatus` 和 `usedFallback`。
 `stats` 还包含 `indexRefreshSkipped`、`queryCacheHit`、`costCacheHit`、`scanDurationMs`、
 `dedupeDurationMs`、`aggregationDurationMs`、`totalDurationMs`、`incrementalFiles`、
-`fullRescanFiles` 和 `scannedBytes`。查询缓存命中时各阶段耗时为 `0`，`totalDurationMs` 始终是当前请求耗时。
+`fullRescanFiles`、`scannedBytes`、`unknownTimestampEvents`、`unknownTimestampTokens`、
+`excludedUnknownTimestampEvents` 和 `excludedUnknownTimestampTokens`。查询缓存命中时各阶段耗时为 `0`，
+`totalDurationMs` 始终是当前请求耗时。
 
 ## 项目结构
 
 ```text
 .
 ├── bin/
-│   ├── codex-token-usage.mjs      # CLI 扫描与聚合逻辑
+│   ├── codex-token-usage.mjs      # CLI 公共入口
+│   ├── codex-token-usage-core.mjs # 参数、数据源与基础工具
 │   ├── codex-usage-server.mjs     # 本地 Web 服务与启动预热
 │   ├── session-scanner.mjs        # 可恢复的增量 JSONL 扫描器
+│   ├── usage-aggregation.mjs      # Direct/Cache 一致的聚合与 CLI 输出
 │   ├── usage-index.mjs            # SQLite 索引、迁移与计价切片
+│   ├── usage-index-view.mjs       # 索引查询的 unknown-time 正确性层
 │   ├── usage-canonical.mjs        # 持久化全局去重范围
 │   ├── usage-query.mjs            # 查询结果 LRU 与缓存只读链路
 │   ├── openai-pricing.mjs         # 价格目录服务入口
@@ -449,12 +468,15 @@ CLI 默认每次直接扫描 JSONL，也可通过 `--use-cache` 复用索引。W
 
 ```bash
 node --check bin/codex-token-usage.mjs
+node --check bin/codex-token-usage-core.mjs
 node --check bin/codex-usage-server.mjs
 node --check bin/openai-pricing.mjs
 node --check bin/pricing-catalog.mjs
 node --check bin/pricing-refresh.mjs
 node --check bin/session-scanner.mjs
+node --check bin/usage-aggregation.mjs
 node --check bin/usage-index.mjs
+node --check bin/usage-index-view.mjs
 node --check bin/usage-query.mjs
 node --check public/app.js
 ```

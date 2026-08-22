@@ -4,8 +4,8 @@ import {
   cachedIndexStats,
   ensureFreshIndex,
   invalidateUsageCaches,
-  usagePayloadFromIndex,
 } from "./usage-index.mjs";
+import { usagePayloadFromIndex } from "./usage-index-view.mjs";
 
 export const DEFAULT_QUERY_CACHE_ENTRIES = 64;
 
@@ -38,6 +38,12 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
       resultCache.clear();
       invalidateUsageCaches(index);
     } else {
+      // refreshIndex=false means "do not start a refresh", not "read a database
+      // while another refresh is publishing file-by-file transactions". Waiting
+      // here gives readers a stable post-refresh generation without triggering IO.
+      if (index.refreshPromise) {
+        await index.refreshPromise;
+      }
       syncStats = cachedIndexStats(index, options.sessionsDirs);
     }
 

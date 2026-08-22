@@ -21,7 +21,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check:syntax": "node --check bin/benchmark-usage-index.mjs && node --check bin/codex-token-usage.mjs && node --check bin/codex-usage-server.mjs && node --check bin/openai-pricing.mjs && node --check bin/path-utils.mjs && node --check bin/pricing-catalog.mjs && node --check bin/pricing-refresh.mjs && node --check bin/session-sources.mjs && node --check bin/session-scanner.mjs && node --check bin/update-pricing.mjs && node --check bin/usage-canonical.mjs && node --check bin/usage-costs.mjs && node --check bin/usage-index.mjs && node --check bin/usage-query.mjs && node --check bin/usage-values.mjs && node --check public/app.js",
+    "check:syntax": "node --check bin/benchmark-usage-index.mjs && node --check bin/codex-token-usage.mjs && node --check bin/codex-token-usage-core.mjs && node --check bin/codex-usage-server.mjs && node --check bin/date-bound-argv.mjs && node --check bin/openai-pricing.mjs && node --check bin/path-utils.mjs && node --check bin/pricing-catalog.mjs && node --check bin/pricing-refresh.mjs && node --check bin/session-sources.mjs && node --check bin/session-scanner.mjs && node --check bin/update-pricing.mjs && node --check bin/usage-aggregation.mjs && node --check bin/usage-canonical.mjs && node --check bin/usage-costs.mjs && node --check bin/usage-index.mjs && node --check bin/usage-index-view.mjs && node --check bin/usage-options.mjs && node --check bin/usage-query.mjs && node --check bin/usage-values.mjs && node --check public/app.js",
     "check": "npm test && npm run check:syntax",
     "usage": "node ./bin/codex-token-usage.mjs",
     "update-pricing": "node ./bin/update-pricing.mjs",

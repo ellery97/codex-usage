@@ -148,6 +148,27 @@ export function estimateAssumedUsageCostUsd(model, usage, timestampMs = null) {
 }
 
 export function costStatsForUsage(model, usage, timestampMs = null) {
+  if (timestampMs == null) {
+    const totalTokens =
+      positiveNumber(usage?.total_tokens) ||
+      positiveNumber(usage?.input_tokens) + positiveNumber(usage?.output_tokens);
+    return {
+      estimated_cost_usd: 0,
+      assumed_cost_usd: 0,
+      assumed_upper_bound_cost_usd: 0,
+      reference_total_cost_usd: 0,
+      reference_total_upper_bound_cost_usd: 0,
+      priced_requests: 0,
+      assumed_requests: 0,
+      unpriced_requests: 1,
+      priced_total_tokens: 0,
+      assumed_total_tokens: 0,
+      unpriced_total_tokens: totalTokens,
+      provisional_priced_requests: 0,
+      provisional_priced_total_tokens: 0,
+      provisional_estimated_cost_usd: 0,
+    };
+  }
   return catalog.costStatsForUsage(model, usage, timestampMs);
 }
 
@@ -167,6 +188,11 @@ export function pricingCatalogVersion() {
       assumedRoutes: catalog.snapshot.assumedRoutes,
     }),
   );
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
 function pricingTimeoutMs() {

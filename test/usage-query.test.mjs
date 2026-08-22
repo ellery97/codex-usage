@@ -13,7 +13,7 @@ import {
 import { closeUsageIndex, ensureFreshIndex, openUsageIndex } from "../bin/usage-index.mjs";
 import { createUsageQueryService } from "../bin/usage-query.mjs";
 
-test("API defaults to index refresh while refreshIndex=0 uses registered source roots", async () => {
+test("API defaults to snapshot reads while explicit refresh remains compatible", async () => {
   const calls = [];
   const queryService = {
     async query(queryOptions, queryPolicy) {
@@ -30,12 +30,20 @@ test("API defaults to index refresh while refreshIndex=0 uses registered source 
 
   await runUsage(queryService, new URLSearchParams({ refreshIndex: "0" }), sourceRegistry);
   await runUsage(queryService, new URLSearchParams({ sourceScope: "windows" }), sourceRegistry);
+  await runUsage(
+    queryService,
+    new URLSearchParams({ sourceScope: "local", refreshIndex: "1" }),
+    sourceRegistry,
+  );
   await runUsage(queryService, new URLSearchParams({ sourceScope: "wsl" }), sourceRegistry);
   assert.equal(calls[0].queryPolicy.refreshIndex, false);
   assert.deepEqual(calls[0].queryOptions.sessionsDirs, sourceRegistry.all);
-  assert.equal(calls[1].queryPolicy.refreshIndex, true);
+  assert.equal(calls[1].queryPolicy.refreshIndex, false);
   assert.deepEqual(calls[1].queryOptions.sessionsDirs, sourceRegistry.windows);
-  assert.deepEqual(calls[2].queryOptions.sessionsDirs, sourceRegistry.wsl);
+  assert.equal(calls[2].queryPolicy.refreshIndex, true);
+  assert.deepEqual(calls[2].queryOptions.sessionsDirs, sourceRegistry.local);
+  assert.equal(calls[3].queryPolicy.refreshIndex, false);
+  assert.deepEqual(calls[3].queryOptions.sessionsDirs, sourceRegistry.wsl);
 });
 
 test("empty registered source stays empty instead of falling back to auto-discovery", () => {
