@@ -55,20 +55,15 @@ export function usageEventFingerprint({
   timestampMs,
   totalUsage,
   lastUsage = null,
-  sessionId = "",
-  cwd = "",
-  model = "",
   fallbackIdentity = null,
 } = {}) {
+  const validTimestamp = Number.isFinite(Number(timestampMs));
   const identity = {
-    timestamp_ms: Number.isFinite(Number(timestampMs)) ? Number(timestampMs) : null,
-    session_id: String(sessionId || ""),
-    cwd: String(cwd || ""),
-    model: String(model || ""),
+    timestamp_ms: validTimestamp ? Number(timestampMs) : null,
     total_usage: usageKey(totalUsage),
     last_usage: lastUsage ? usageKey(lastUsage) : null,
   };
-  if (identity.timestamp_ms == null) {
+  if (!validTimestamp) {
     identity.fallback_identity = String(fallbackIdentity || "unknown");
   }
   return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
