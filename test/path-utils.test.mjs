@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -33,6 +35,39 @@ test("CODEX_USAGE_SESSIONS uses the native platform path-list delimiter", () => 
     if (previous == null) delete process.env.CODEX_USAGE_SESSIONS;
     else process.env.CODEX_USAGE_SESSIONS = previous;
   }
+});
+
+test("--codex-home participates in native Windows default discovery", async (t) => {
+  if (process.platform !== "win32") return;
+
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-custom-home-test-"));
+  const sessionsDir = path.join(directory, "sessions");
+  const archivedDir = path.join(directory, "archived_sessions");
+  await mkdir(sessionsDir);
+  await mkdir(archivedDir);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const envKeys = [
+    "CODEX_HOME",
+    "CODEX_USAGE_SESSIONS",
+    "CODEX_USAGE_WINDOWS_ROOT",
+    "CODEX_USAGE_WSL_DISTROS",
+  ];
+  const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+  process.env.CODEX_USAGE_WINDOWS_ROOT = path.join(directory, "windows-users");
+  process.env.CODEX_USAGE_WSL_DISTROS = "CodexUsageMissingDistro";
+  delete process.env.CODEX_HOME;
+  delete process.env.CODEX_USAGE_SESSIONS;
+  t.after(() => {
+    for (const [key, value] of previousEnv) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  const options = parseArgs(["--codex-home", directory]);
+  assert.ok(options.sessionsDirs.includes(path.resolve(sessionsDir)));
+  assert.ok(options.sessionsDirs.includes(path.resolve(archivedDir)));
 });
 
 test("sqlPathFilter keeps the Windows descendant wildcard active", () => {

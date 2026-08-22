@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { existsSync, readdirSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -12,6 +11,14 @@ import {
   refreshPricing,
 } from "./openai-pricing.mjs";
 import { splitPathList } from "./path-utils.mjs";
+import {
+  DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR,
+  DEFAULT_WINDOWS_SESSIONS_DIR,
+  DEFAULT_WINDOWS_USERS_ROOT,
+  defaultWindowsSessionDirs,
+  defaultWslSessionDirs,
+  discoverSourceRegistry,
+} from "./session-sources.mjs";
 import {
   scanSessionFile,
   scanSessionFileRange,
@@ -28,6 +35,14 @@ import {
 } from "./usage-costs.mjs";
 
 export { scanSessionFile, scanSessionFileRange, SESSION_SCANNER_VERSION };
+export {
+  DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR,
+  DEFAULT_WINDOWS_SESSIONS_DIR,
+  DEFAULT_WINDOWS_USERS_ROOT,
+  defaultWindowsSessionDirs,
+  defaultWslSessionDirs,
+  discoverSourceRegistry,
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,22 +57,6 @@ const DATE_FORMATTERS = new Map();
 const TIME_FORMATTERS = new Map();
 const DATE_KEY_CACHE = new Map();
 const DATE_TIME_CACHE = new Map();
-export const DEFAULT_WINDOWS_USERS_ROOT = "/mnt/c/Users";
-const DEFAULT_WINDOWS_USER =
-  process.env.CODEX_USAGE_WINDOWS_USER || process.env.USERNAME || process.env.USER || "windows-user";
-export const DEFAULT_WINDOWS_SESSIONS_DIR = path.join(
-  DEFAULT_WINDOWS_USERS_ROOT,
-  DEFAULT_WINDOWS_USER,
-  ".codex",
-  "sessions",
-);
-export const DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR = path.join(
-  DEFAULT_WINDOWS_USERS_ROOT,
-  DEFAULT_WINDOWS_USER,
-  ".codex",
-  "archived_sessions",
-);
-const SKIP_WINDOWS_USER_DIRS = new Set(["All Users", "Default", "Default User", "Public"]);
 
 function expandHome(inputPath) {
   if (!inputPath) {
@@ -94,30 +93,8 @@ function envSessionDirs() {
   return splitPathList(process.env.CODEX_USAGE_SESSIONS);
 }
 
-export function defaultWindowsSessionDirs() {
-  const dirs = [];
-  if (existsSync(DEFAULT_WINDOWS_USERS_ROOT)) {
-    try {
-      for (const entry of readdirSync(DEFAULT_WINDOWS_USERS_ROOT, { withFileTypes: true })) {
-        if (!entry.isDirectory() || SKIP_WINDOWS_USER_DIRS.has(entry.name)) {
-          continue;
-        }
-        const userCodexHome = path.join(DEFAULT_WINDOWS_USERS_ROOT, entry.name, ".codex");
-        dirs.push(path.join(userCodexHome, "sessions"));
-        dirs.push(path.join(userCodexHome, "archived_sessions"));
-      }
-    } catch {
-      dirs.push(DEFAULT_WINDOWS_SESSIONS_DIR, DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR);
-    }
-  } else {
-    dirs.push(DEFAULT_WINDOWS_SESSIONS_DIR, DEFAULT_WINDOWS_ARCHIVED_SESSIONS_DIR);
-  }
-  return normalizeSessionDirs(dirs.filter((dir) => existsSync(dir)));
-}
-
 function defaultSessionDirs(codexHome) {
-  const dirs = [path.join(codexHome, "sessions"), ...defaultWindowsSessionDirs()];
-  return normalizeSessionDirs(dirs);
+  return normalizeSessionDirs(discoverSourceRegistry({ codexHome }).all);
 }
 
 function defaultTimezone() {
@@ -326,7 +303,7 @@ function helpText() {
 
 Options:
   --codex-home PATH       Codex home directory. Default: $CODEX_HOME or ~/.codex
-  --sessions PATH         Sessions directory. Can be repeated. Default: <codex-home>/sessions plus Windows sessions when present
+  --sessions PATH         Sessions directory. Can be repeated. Default: all discovered WSL/Linux and Windows sources
   --from, --since DATE    Include token events at or after DATE
   --to, --until DATE      Include token events through DATE if DATE is YYYY-MM-DD
   --last DURATION         Include recent events, e.g. 24h, 7d, 4w

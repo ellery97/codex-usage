@@ -347,11 +347,11 @@ function formatRange(range) {
 
 function formatSource(source) {
   if (Array.isArray(source)) {
-    if (source.length === 0) return "本地会话";
+    if (source.length === 0) return "未发现可访问目录";
     if (source.length === 1) return source[0];
     return `${source.length} 个会话目录`;
   }
-  return source || "本地会话";
+  return source || "未发现可访问目录";
 }
 
 function sourceTitle(source) {
