@@ -11,6 +11,7 @@ import {
 } from "./usage-values.mjs";
 
 export const SESSION_SCANNER_VERSION = 2;
+const EVENT_KEY_SEPARATOR = "|";
 
 function sessionIdFromPath(filePath) {
   const base = path.basename(filePath, ".jsonl");
@@ -69,6 +70,12 @@ function serializedSessionScanState(state) {
     lastTotalUsage: { ...state.lastTotalUsage },
     sawPrimarySessionMeta: state.sawPrimarySessionMeta,
   };
+}
+
+function cumulativeKeyFromStoredEventKey(value) {
+  const key = String(value || "");
+  const separator = key.lastIndexOf(EVENT_KEY_SEPARATOR);
+  return separator === -1 ? key : key.slice(separator + 1);
 }
 
 function processSessionLine(filePath, line, state, seenTotals, events, stats, { trailing = false } = {}) {
@@ -145,18 +152,17 @@ function processSessionLine(filePath, line, state, seenTotals, events, stats, { 
     totalUsage,
     lastUsage: usage,
     fallbackIdentity: `${session.id}\0${cwd}\0${model}`,
-    sessionId: session.id,
-    cwd,
-    model,
   });
 
   events.push({
     timestampMs,
     sessionCreatedAtMs: session.createdAtMs,
     sessionId: session.id,
-    // Kept under the existing field name so older index schemas can consume the
-    // stronger identity without a destructive migration.
-    totalUsageKey: eventFingerprint,
+    // Prefix the legacy cumulative key with the global event fingerprint. The
+    // suffix keeps incremental per-file duplicate detection recoverable from
+    // indexed rows while the full key prevents unrelated sessions with the
+    // same cumulative token vector from colliding globally.
+    totalUsageKey: `${eventFingerprint}${EVENT_KEY_SEPARATOR}${totalKey}`,
     file: filePath,
     cwd,
     model,
@@ -170,7 +176,9 @@ export async function scanSessionFileRange(
   { startOffset = 0, endOffset = null, state: savedState = null, seenTotals: savedTotals = null } = {},
 ) {
   const events = [];
-  const seenTotals = savedTotals instanceof Set ? savedTotals : new Set(savedTotals || []);
+  const seenTotals = new Set(
+    Array.from(savedTotals || [], cumulativeKeyFromStoredEventKey),
+  );
   const stats = {
     duplicateTokenEvents: 0,
     parseErrors: 0,
