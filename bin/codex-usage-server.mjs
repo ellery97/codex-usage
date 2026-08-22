@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_WINDOWS_SESSIONS_DIR,
   defaultWindowsSessionDirs,
-  parseArgs,
 } from "./codex-token-usage.mjs";
+import { parseArgs } from "./usage-options.mjs";
 import {
   closeUsageIndex,
   DEFAULT_DB_PATH,
