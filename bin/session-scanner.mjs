@@ -5,11 +5,12 @@ import {
   diffUsage,
   hasUsage,
   normalizeUsage,
+  usageEventFingerprint,
   usageKey,
   usageZero,
 } from "./usage-values.mjs";
 
-export const SESSION_SCANNER_VERSION = 1;
+export const SESSION_SCANNER_VERSION = 2;
 
 function sessionIdFromPath(filePath) {
   const base = path.basename(filePath, ".jsonl");
@@ -135,15 +136,30 @@ function processSessionLine(filePath, line, state, seenTotals, events, stats, { 
   }
   state.lastTotalUsage = totalUsage;
 
-  const timestampMs = Date.parse(obj.timestamp || "");
+  const parsedTimestampMs = Date.parse(obj.timestamp || "");
+  const timestampMs = Number.isNaN(parsedTimestampMs) ? session.createdAtMs : parsedTimestampMs;
+  const cwd = state.context.cwd || session.cwd || "(unknown cwd)";
+  const model = state.context.model || session.model || "(unknown model)";
+  const eventFingerprint = usageEventFingerprint({
+    timestampMs,
+    totalUsage,
+    lastUsage: usage,
+    fallbackIdentity: `${session.id}\0${cwd}\0${model}`,
+    sessionId: session.id,
+    cwd,
+    model,
+  });
+
   events.push({
-    timestampMs: Number.isNaN(timestampMs) ? session.createdAtMs : timestampMs,
+    timestampMs,
     sessionCreatedAtMs: session.createdAtMs,
     sessionId: session.id,
-    totalUsageKey: totalKey,
+    // Kept under the existing field name so older index schemas can consume the
+    // stronger identity without a destructive migration.
+    totalUsageKey: eventFingerprint,
     file: filePath,
-    cwd: state.context.cwd || session.cwd || "(unknown cwd)",
-    model: state.context.model || session.model || "(unknown model)",
+    cwd,
+    model,
     usage,
   });
   return true;
