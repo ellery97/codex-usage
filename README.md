@@ -9,13 +9,21 @@
 统计输入、缓存读写、输出、推理输出、总 token、请求数、会话数、缓存命中率和参考金额，并提供
 命令行输出和本地 Web 仪表盘两种使用方式。
 
-默认数据来源是：
+默认会按运行环境发现可访问的数据源；“全部目录”会合并 WSL/Linux 与 Windows 两侧：
 
 ```text
+# WSL/Linux 侧（在 WSL 中使用本地路径，在 Windows 中使用 \\wsl.localhost 或 \\wsl$ UNC 路径）
 ~/.codex/sessions/**/*.jsonl
-/mnt/c/Users/*/.codex/sessions/**/*.jsonl  # 目录存在时自动加入
-/mnt/c/Users/*/.codex/archived_sessions/**/*.jsonl  # 目录存在时自动加入
+~/.codex/archived_sessions/**/*.jsonl
+
+# Windows 侧（在 WSL/Linux 中使用 /mnt/c，在 Windows 中使用 C:\Users）
+/mnt/c/Users/*/.codex/sessions/**/*.jsonl
+/mnt/c/Users/*/.codex/archived_sessions/**/*.jsonl
 ```
+
+不存在或无法访问的目录会被忽略，不会把 `/mnt/c/...` 在原生 Windows 中错误转换为
+`E:\mnt\c\...`。原生 Windows 会枚举已安装且可访问的 WSL 发行版及其 `/home/*` 用户目录；
+WSL/Linux 会检查可访问的 Windows 用户目录。
 
 工具只读取 `event_msg.token_count`、`turn_context` 和 `session_meta` 相关记录，用于还原
 token 用量、模型、工作目录和会话信息，不输出会话正文。
@@ -30,15 +38,15 @@ token 用量、模型、工作目录和会话信息，不输出会话正文。
 - Web 服务使用 SQLite 持久索引；普通追加只读取新增字节，文件被替换或改写时才回退为完整重扫。
 - 全局去重代表事件按数据源范围持久化，筛选变化复用已计价切片和进程内查询缓存。
 - 按事件发生时间选择 OpenAI API Standard 价格版本，并区分官方金额、假设金额和未计价模型。
-- 在 WSL 环境下默认自动合并 Windows 侧 Codex 当前会话目录和归档会话目录。
+- 默认自动发现并合并 WSL/Linux 与 Windows 两侧的当前会话和归档会话目录。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
 
 ## 环境要求
 
 - Node.js，需要支持内置 `node:sqlite` 的版本。当前项目已在 `v22.22.0` 下验证。
 - 不需要安装第三方 npm 依赖，项目只使用 Node.js 标准库。
-- 本机需要存在 Codex 会话日志目录，默认是 `~/.codex/sessions`；如果 WSL 下能访问 Windows 侧
-  `/mnt/c/Users/*/.codex/sessions` 或 `/mnt/c/Users/*/.codex/archived_sessions`，也会自动加入。
+- 本机需要存在至少一个可访问的 Codex 会话日志目录。WSL/Linux 默认从 `~/.codex` 开始，
+  原生 Windows 默认扫描 `C:\Users\*\.codex`，并在可用时互相发现另一侧环境。
 
 如果启动 Web 服务时报 `No such built-in module: node:sqlite`，请升级 Node.js。
 
@@ -133,7 +141,9 @@ Web 的 `24h`、`7d`、`30d` 和 `12w` 范围按当前时间的分钟桶滚动�
 8 个最近使用的范围。旧索引会原地迁移；如果索引中的扫描器版本已过期，升级后的首次索引刷新会逐文件
 完整重读现有 JSONL，以恢复 cache-write、六字段累计 Token key 和可恢复解析状态。每个文件转换成功后
 立即提交，后续启动不会重复处理；全部转换完成后，普通追加恢复为增量读取。
-页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换；Windows 口径包含当前会话和归档会话。
+页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换；WSL/Linux 和 Windows
+口径都包含对应环境可访问的当前会话与归档会话。API 仍兼容 `sourceScope=local`，它表示运行时本地
+的当前会话目录。
 
 `.codex-usage/` 已写入 `.gitignore`，不会提交到 Git。
 运行时价格目录默认保存在同一目录的 `pricing-history.json`。
@@ -315,7 +325,9 @@ npm run update-pricing -- \
 | `CODEX_USAGE_SCAN_CONCURRENCY` | `8` | 重扫会话文件的并发数，范围会限制在 `1` 到 `32` |
 | `CODEX_USAGE_GC` | 非 `0` | 设为 `0` 可关闭 Web 服务中的显式 GC |
 | `CODEX_HOME` | `~/.codex` | Codex home 目录，影响默认 sessions 路径 |
-| `CODEX_USAGE_SESSIONS` | 空 | 用 `:` 分隔的多个会话目录；设置后覆盖默认自动发现 |
+| `CODEX_USAGE_SESSIONS` | 空 | 用平台路径分隔符分隔的多个会话目录（Windows 为 `;`，WSL/Linux 为 `:`）；设置后覆盖 `all` 的默认自动发现 |
+| `CODEX_USAGE_WINDOWS_ROOT` | 自动推断 | Windows 用户根目录；原生 Windows 默认从 `USERPROFILE` 推断，WSL/Linux 默认 `/mnt/c/Users` |
+| `CODEX_USAGE_WSL_DISTROS` | 自动枚举 | 原生 Windows 上要检查的 WSL 发行版，使用 `;` 分隔；未设置时调用 `wsl.exe -l -q` |
 
 示例：
 
@@ -342,7 +354,7 @@ GET /api/usage
 | 参数 | 示例 | 说明 |
 | --- | --- | --- |
 | `range` | `all`、`today`、`24h`、`7d`、`30d`、`12w`、`custom` | 时间范围；滚动范围按分钟更新 |
-| `sourceScope` | `all`、`local`、`windows` | 数据源范围 |
+| `sourceScope` | `all`、`local`、`wsl`、`windows` | 数据源范围；`local` 保留兼容，`wsl` 和 `windows` 为两个明确环境 |
 | `from` | `2026-04-01` | `range=custom` 时的开始日期 |
 | `to` | `2026-04-30` | `range=custom` 时的结束日期 |
 | `group` | `day` | 分组方式 |

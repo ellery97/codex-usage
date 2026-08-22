@@ -11,13 +11,23 @@ only contacts fixed official OpenAI model-documentation URLs to validate public 
 
 ## Data sources
 
-By default, the tool discovers these sources when they exist:
+By default, the tool discovers every accessible source for the current runtime. The `all` scope
+merges the WSL/Linux and Windows sides:
 
 ```text
+# WSL/Linux side (local paths in WSL, \\wsl.localhost or \\wsl$ UNC paths on native Windows)
 ~/.codex/sessions/**/*.jsonl
+~/.codex/archived_sessions/**/*.jsonl
+
+# Windows side (/mnt/c paths in WSL/Linux, C:\Users paths on native Windows)
 /mnt/c/Users/*/.codex/sessions/**/*.jsonl
 /mnt/c/Users/*/.codex/archived_sessions/**/*.jsonl
 ```
+
+Missing or inaccessible directories are ignored. On native Windows the tool does not rewrite
+`/mnt/c/...` into a fake path such as `E:\mnt\c\...`; it enumerates accessible WSL distributions
+and their `/home/*` users through UNC paths. In WSL/Linux it checks accessible Windows user
+directories under `/mnt/c/Users`.
 
 Only `event_msg.token_count`, `turn_context`, and `session_meta` records are used to
 recover token usage, model, working directory, and session metadata. Session bodies are
@@ -32,14 +42,15 @@ not printed or uploaded.
 - Keep a persistent SQLite index; safe appends read only new bytes and rewritten files fall back to a full rescan.
 - Persist global canonical events by source scope and reuse costed slices plus an in-process query cache.
 - Select OpenAI API Standard prices at each event timestamp and distinguish official, assumed, and unpriced usage.
-- Discover Windows current and archived Codex session directories under WSL.
+- Discover and merge current and archived Codex sessions on both WSL/Linux and Windows when available.
 - Use global deduplication by default to reduce double counting from copied historical rollout content.
 
 ## Requirements
 
 - Node.js 22 or later, including the built-in `node:sqlite` module.
 - No third-party runtime npm dependencies are required.
-- A local Codex session directory, normally `~/.codex/sessions`.
+- At least one accessible Codex session directory. The default starts at `~/.codex` on WSL/Linux,
+  scans `C:\Users\*\.codex` on native Windows, and discovers the other environment when available.
 
 If the web server reports `No such built-in module: node:sqlite`, upgrade Node.js.
 
@@ -118,6 +129,8 @@ token keys, and resumable parser state. Each converted file commits independentl
 finishes, ordinary appends return to incremental reads.
 
 The source selector supports all directories, WSL/Linux, and Windows (including archived sessions).
+The API keeps `sourceScope=local` for compatibility; it means the current session directory of the
+runtime environment.
 `.codex-usage/` is ignored by Git and should never be committed.
 The runtime price history is stored beside the database as `pricing-history.json`.
 
@@ -295,7 +308,9 @@ Primary references:
 | `CODEX_USAGE_SCAN_CONCURRENCY` | `8` | Rescan concurrency, clamped to 1–32 |
 | `CODEX_USAGE_GC` | non-`0` | Set to `0` to disable explicit GC |
 | `CODEX_HOME` | `~/.codex` | Codex home used for default session discovery |
-| `CODEX_USAGE_SESSIONS` | empty | Colon-separated session directories; overrides auto-discovery |
+| `CODEX_USAGE_SESSIONS` | empty | Platform-delimited session directories (`;` on Windows, `:` on WSL/Linux); overrides default discovery for `all` |
+| `CODEX_USAGE_WINDOWS_ROOT` | auto-detected | Windows user root; inferred from `USERPROFILE` on native Windows and defaults to `/mnt/c/Users` on WSL/Linux |
+| `CODEX_USAGE_WSL_DISTROS` | auto-detected | Semicolon-separated WSL distributions to inspect on native Windows; otherwise `wsl.exe -l -q` is used |
 
 Example:
 
@@ -311,7 +326,7 @@ The web server exposes:
 GET /api/usage
 ```
 
-Common query parameters are `range`, `sourceScope`, `from`, `to`, `group`, `sort`, `asc`,
+Common query parameters are `range`, `sourceScope` (`all`, `local`, `wsl`, or `windows`), `from`, `to`, `group`, `sort`, `asc`,
 `desc`, `limit`, `dedupeScope`, and `refreshIndex`. `refreshIndex=0` reads SQLite only;
 `refreshIndex=1` refreshes the index first. The default remains `1` for API compatibility.
 Rolling ranges use one-minute time buckets, and `today` changes at midnight in the target timezone.

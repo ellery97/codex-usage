@@ -19,15 +19,25 @@ test("API defaults to index refresh while refreshIndex=0 uses registered source 
   const sourceRegistry = {
     all: [path.resolve("/cached/all")],
     local: [path.resolve("/cached/local")],
+    wsl: [path.resolve("/cached/wsl")],
     windows: [path.resolve("/cached/windows")],
   };
 
   await runUsage(queryService, new URLSearchParams({ refreshIndex: "0" }), sourceRegistry);
   await runUsage(queryService, new URLSearchParams({ sourceScope: "windows" }), sourceRegistry);
+  await runUsage(queryService, new URLSearchParams({ sourceScope: "wsl" }), sourceRegistry);
   assert.equal(calls[0].queryPolicy.refreshIndex, false);
   assert.deepEqual(calls[0].queryOptions.sessionsDirs, sourceRegistry.all);
   assert.equal(calls[1].queryPolicy.refreshIndex, true);
   assert.deepEqual(calls[1].queryOptions.sessionsDirs, sourceRegistry.windows);
+  assert.deepEqual(calls[2].queryOptions.sessionsDirs, sourceRegistry.wsl);
+});
+
+test("empty registered source stays empty instead of falling back to auto-discovery", () => {
+  const sourceRegistry = { all: [], local: [], wsl: [], windows: [] };
+  const options = optionsFromQuery(new URLSearchParams({ sourceScope: "wsl" }), { sourceRegistry });
+  assert.deepEqual(options.sessionsDirs, []);
+  assert.equal(options.sessionsExplicit, true);
 });
 
 test("rolling web ranges reuse one minute bucket and expire at the next minute", async (t) => {
@@ -212,6 +222,7 @@ test("web startup indexes logs before refreshing newly observed models", async (
     await rm(directory, { recursive: true, force: true });
   });
   const previousCodexHome = process.env.CODEX_HOME;
+  const previousSessions = process.env.CODEX_USAGE_SESSIONS;
   process.env.CODEX_HOME = directory;
   t.after(() => {
     if (previousCodexHome == null) delete process.env.CODEX_HOME;
@@ -220,6 +231,11 @@ test("web startup indexes logs before refreshing newly observed models", async (
 
   const sessionsDir = path.join(directory, "sessions");
   await mkdir(sessionsDir, { recursive: true });
+  process.env.CODEX_USAGE_SESSIONS = sessionsDir;
+  t.after(() => {
+    if (previousSessions == null) delete process.env.CODEX_USAGE_SESSIONS;
+    else process.env.CODEX_USAGE_SESSIONS = previousSessions;
+  });
   await writeFile(
     path.join(sessionsDir, "rollout.jsonl"),
     sessionText("fresh-model", "new-valid-model", directory, usage(100, 10)),

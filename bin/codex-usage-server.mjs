@@ -7,8 +7,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  DEFAULT_WINDOWS_SESSIONS_DIR,
   defaultWindowsSessionDirs,
+  defaultWslSessionDirs,
+  discoverSourceRegistry as discoverSessionSourceRegistry,
   parseArgs,
 } from "./codex-token-usage.mjs";
 import {
@@ -37,7 +38,7 @@ const ENABLE_GC = process.env.CODEX_USAGE_GC !== "0";
 const GROUPS = new Set(["none", "day", "month", "model", "cwd", "session"]);
 const SORTS = new Set(["key", "total", "input", "output", "cached", "reasoning", "requests", "sessions", "cost"]);
 const DEDUPE_SCOPES = new Set(["global", "file"]);
-const SOURCE_SCOPES = new Set(["all", "local", "windows"]);
+const SOURCE_SCOPES = new Set(["all", "local", "wsl", "windows"]);
 const RANGE_TO_LAST = new Map([
   ["24h", "24h"],
   ["7d", "7d"],
@@ -79,17 +80,6 @@ function sourceScopeFromQuery(searchParams) {
   return SOURCE_SCOPES.has(value) ? value : "all";
 }
 
-function addWindowsSessionArgs(args) {
-  const dirs = defaultWindowsSessionDirs();
-  if (dirs.length === 0) {
-    args.push("--sessions", DEFAULT_WINDOWS_SESSIONS_DIR);
-    return;
-  }
-  for (const dir of dirs) {
-    args.push("--sessions", dir);
-  }
-}
-
 function usageArgvFromQuery(searchParams, sourceRegistry = null) {
   const group = searchParams.get("group") || "month";
   const sort = searchParams.get("sort") || (group === "day" || group === "month" ? "key" : "total");
@@ -104,8 +94,14 @@ function usageArgvFromQuery(searchParams, sourceRegistry = null) {
     }
   } else if (sourceScope === "local") {
     args.push("--sessions", localSessionsDir());
+  } else if (sourceScope === "wsl") {
+    for (const dir of defaultWslSessionDirs()) {
+      args.push("--sessions", dir);
+    }
   } else if (sourceScope === "windows") {
-    addWindowsSessionArgs(args);
+    for (const dir of defaultWindowsSessionDirs()) {
+      args.push("--sessions", dir);
+    }
   }
 
   const limit = clampInt(searchParams.get("limit"), group === "cwd" || group === "session" ? 30 : 0, 0, 500);
@@ -142,13 +138,20 @@ export function optionsFromQuery(
   { sourceRegistry = null, nowMs = Date.now() } = {},
 ) {
   const rangeKey = searchParams.get("range") || "all";
+  const sourceScope = sourceScopeFromQuery(searchParams);
   const rangeNowMs = RANGE_TO_LAST.has(rangeKey)
     ? Math.floor(Number(nowMs) / RELATIVE_RANGE_BUCKET_MS) * RELATIVE_RANGE_BUCKET_MS
     : Number(nowMs);
   const options = parseArgs(usageArgvFromQuery(searchParams, sourceRegistry), {
     nowMs: rangeNowMs,
   });
-  options.sourceScope = sourceScopeFromQuery(searchParams);
+  const selectedDirs = sourceRegistry?.[sourceScope];
+  if (Array.isArray(selectedDirs) && selectedDirs.length === 0) {
+    options.sessionsDirs = [];
+    options.sessionsDir = null;
+    options.sessionsExplicit = true;
+  }
+  options.sourceScope = sourceScope;
   options.rangeKey = rangeKey;
   return options;
 }
@@ -161,12 +164,9 @@ export async function runUsage(queryService, searchParams, sourceRegistry = null
 }
 
 export function discoverSourceRegistry() {
-  const windowsDirs = defaultWindowsSessionDirs();
-  return {
-    all: parseArgs([]).sessionsDirs,
-    local: [localSessionsDir()],
-    windows: windowsDirs.length > 0 ? windowsDirs : [DEFAULT_WINDOWS_SESSIONS_DIR],
-  };
+  return discoverSessionSourceRegistry({
+    codexHome: process.env.CODEX_HOME || path.join(homedir(), ".codex"),
+  });
 }
 
 async function serveStatic(req, res, pathname) {
@@ -270,7 +270,7 @@ export async function startDashboard({ port = PORT, host = HOST, ...initializeOp
 
 async function prewarmDashboardScopes(index, sourceRegistry) {
   const seen = new Set();
-  for (const sourceScope of ["all", "local", "windows"]) {
+  for (const sourceScope of ["all", "local", "wsl", "windows"]) {
     const options = optionsFromQuery(new URLSearchParams({ sourceScope }), { sourceRegistry });
     const key = options.sessionsDirs.slice().sort().join("\n");
     if (seen.has(key) || !(await anyDirectoryExists(options.sessionsDirs))) continue;
