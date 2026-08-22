@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -159,6 +160,21 @@ test("bounded time ranges report truly unknown timestamps as explicitly excluded
   }
   assert.deepEqual(cached.totals, direct.totals);
   assert.deepEqual(cached.rows, direct.rows);
+});
+
+test("README contracts match read-only GET and scanner context behavior", () => {
+  const zh = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const en = readFileSync(new URL("../README.en.md", import.meta.url), "utf8");
+
+  assert.match(zh, /event_msg\.thread_settings_applied/);
+  assert.match(zh, /POST \/api\/index\/refresh/);
+  assert.match(zh, /缺省为 `0`/);
+  assert.match(zh, /excludedUnknownTimestampEvents/);
+
+  assert.match(en, /event_msg\.thread_settings_applied/);
+  assert.match(en, /POST \/api\/index\/refresh/);
+  assert.match(en, /snapshot-only by default/);
+  assert.match(en, /excludedUnknownTimestampEvents/);
 });
 
 function sessionText(id, model, cwd, usage) {
