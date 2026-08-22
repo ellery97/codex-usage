@@ -1,8 +1,9 @@
-import { parseArgs as parseLegacyArgs, startOfDayInTimezone } from "./codex-token-usage.mjs";
+import { parseArgs as parseLegacyArgs } from "./codex-token-usage.mjs";
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const FROM_FLAGS = new Set(["--from", "--since"]);
 const TO_FLAGS = new Set(["--to", "--until"]);
+const DATE_FORMATTERS = new Map();
 
 export function parseArgs(argv, options = {}) {
   return parseLegacyArgs(normalizeDateBoundArgv(argv), options);
@@ -81,4 +82,44 @@ function nextDateKey(value) {
     String(probe.getUTCMonth() + 1).padStart(2, "0"),
     String(probe.getUTCDate()).padStart(2, "0"),
   ].join("-");
+}
+
+function startOfDateInTimezone(dateKey, timezone) {
+  const match = DATE_ONLY.exec(dateKey);
+  if (!match) throw new Error(`Invalid date: ${dateKey}`);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utcGuess = Date.UTC(year, month - 1, day);
+  let low = utcGuess - 36 * 60 * 60 * 1000;
+  let high = utcGuess + 36 * 60 * 60 * 1000;
+
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (zonedDateKey(middle, timezone) < dateKey) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  if (zonedDateKey(low, timezone) !== dateKey) {
+    throw new Error(`Date ${dateKey} does not exist in timezone ${timezone}`);
+  }
+  return low;
+}
+
+function zonedDateKey(timestampMs, timezone) {
+  let formatter = DATE_FORMATTERS.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    DATE_FORMATTERS.set(timezone, formatter);
+  }
+  const parts = formatter.formatToParts(new Date(timestampMs));
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
 }
