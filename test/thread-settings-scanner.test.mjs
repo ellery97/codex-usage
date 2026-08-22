@@ -75,7 +75,11 @@ test("scanner backfills other late session context without overwriting later kno
 
 test("index fully rescans when late model context crosses an incremental boundary", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-late-model-index-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  let index = null;
+  t.after(async () => {
+    closeUsageIndex(index);
+    await rm(directory, { recursive: true, force: true });
+  });
   const sessionsDir = path.join(directory, "sessions");
   const sessionFile = path.join(sessionsDir, "rollout.jsonl");
   const dbPath = path.join(directory, "cache.sqlite");
@@ -90,8 +94,7 @@ test("index fully rescans when late model context crosses an incremental boundar
       .join("\n")}\n`,
   );
 
-  const index = await openUsageIndex({ dbPath, scanCheckTtlMs: 0, enableGc: false });
-  t.after(() => closeUsageIndex(index));
+  index = await openUsageIndex({ dbPath, scanCheckTtlMs: 0, enableGc: false });
   const options = usageOptions(sessionsDir);
 
   const firstSync = await ensureFreshIndex(index, [sessionsDir]);
