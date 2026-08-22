@@ -29,9 +29,9 @@ Missing or inaccessible directories are ignored. On native Windows the tool does
 and their `/home/*` users through UNC paths. In WSL/Linux it checks accessible Windows user
 directories under `/mnt/c/Users`.
 
-Only `event_msg.token_count`, `turn_context`, and `session_meta` records are used to
-recover token usage, model, working directory, and session metadata. Session bodies are
-not printed or uploaded.
+Only `event_msg.token_count`, `event_msg.thread_settings_applied`, `turn_context`, and
+`session_meta` records are used to recover token usage, model, working directory, and session
+metadata. Session bodies are not printed or uploaded.
 
 ## Features
 
@@ -42,6 +42,7 @@ not printed or uploaded.
 - Keep a persistent SQLite index; safe appends read only new bytes and rewritten files fall back to a full rescan.
 - Persist global canonical events by source scope and reuse costed slices plus an in-process query cache.
 - Select OpenAI API Standard prices at each event timestamp and distinguish official, assumed, and unpriced usage.
+- Keep truly timestamp-less events in all-time totals as unpriced usage, while bounded ranges report how many were excluded.
 - Discover and merge current and archived Codex sessions on both WSL/Linux and Windows when available.
 - Use global deduplication by default to reduce double counting from copied historical rollout content.
 
@@ -121,12 +122,12 @@ The `24h`, `7d`, `30d`, and `12w` Web ranges roll in one-minute buckets: request
 reuse a stable boundary, while the next minute gets a new cache key. `today` starts at midnight in
 the target IANA timezone and changes as soon as that timezone enters a new date.
 
-Global canonical representatives are persisted per normalized source-root set. Only dirty token
+Global canonical representatives are persisted per normalized source-root set. Only dirty event
 keys are repaired after file changes, and at most eight recently used scopes are retained. Existing
 indexes migrate in place. When the stored scanner version is stale, the first index refresh after an
-upgrade fully rereads each existing JSONL file to recover cache-write values, six-field cumulative
-token keys, and resumable parser state. Each converted file commits independently; once conversion
-finishes, ordinary appends return to incremental reads.
+upgrade fully rereads each existing JSONL file to recover cache-write values, event fingerprints,
+cumulative-token key suffixes, and resumable parser state. Each converted file commits
+independently; once conversion finishes, ordinary appends return to incremental reads.
 
 The source selector supports all directories, WSL/Linux, and Windows (including archived sessions).
 The API keeps `sourceScope=local` for compatibility; it means the current session directory of the
@@ -204,12 +205,25 @@ Available options:
 
 ## Accounting semantics
 
-Codex session files can contain duplicate cumulative `token_count` records in one file,
-and newer rollout files can embed historical events. The tool first deduplicates within each
-file, then uses global cumulative-vector deduplication by default across all files.
+Codex session files can contain duplicate cumulative `token_count` records in one file, and newer
+rollout files can embed historical events. The tool first deduplicates cumulative-token vectors
+within each file. The default `global` scope then deduplicates across files with an event fingerprint
+built from the event timestamp, six-field cumulative usage, and request delta. When the event
+timestamp is truly missing, the fingerprint also includes fallback session/cwd/model identity to
+avoid unrelated-session collisions.
+
+Direct Scan and SQLite use the same deterministic canonical representative rule: complete file path
+in binary order, then event order within the file. Reversing the order of repeated `--sessions`
+arguments therefore cannot change model, cwd, session, or cost attribution.
 
 Use `--dedupe-scope file` when inspecting the raw records of one JSONL file. Use the default
-`global` scope for long-term real-usage totals.
+`global` scope for long-term real-usage totals. Canonical selection happens before time filtering.
+
+Truly timestamp-less events are not silently dropped from all-time results. With no `from`/`to`
+bounds they remain in request and token totals, are treated as unpriced, and appear under
+`(unknown time)` for day/month grouping. Bounded queries cannot safely determine whether such an
+event is in range, so they exclude it and report `stats.excludedUnknownTimestampEvents` and
+`stats.excludedUnknownTimestampTokens`.
 
 ## Fields
 
@@ -243,10 +257,11 @@ Cached input, cache-write input, and reasoning output are subsets; do not add th
 
 ## Cost estimation
 
-Costs come from a versioned catalog of OpenAI API Standard text-token prices. Each event selects
-the newest version whose effective time is not later than the event's UTC timestamp; an event
-exactly on a boundary uses the new version. Legacy prices without an authoritative effective date
-remain visible as `provisional` historical baselines.
+Costs come from a versioned catalog of OpenAI API Standard text-token prices. Each timestamped event
+selects the newest version whose effective time is not later than the event's UTC timestamp; an
+event exactly on a boundary uses the new version. A truly timestamp-less event cannot safely select
+a historical price version, so it remains in token totals but is marked unpriced. Legacy prices
+without an authoritative effective date remain visible as `provisional` historical baselines.
 
 Built-in history lives at `pricing/openai-pricing.snapshot.json`. Runtime validation is stored as
 `.codex-usage/pricing-history.json` beside the SQLite database. The web server refreshes before
@@ -324,12 +339,18 @@ The web server exposes:
 
 ```text
 GET /api/usage
+POST /api/index/refresh
 ```
 
-Common query parameters are `range`, `sourceScope` (`all`, `local`, `wsl`, or `windows`), `from`, `to`, `group`, `sort`, `asc`,
-`desc`, `limit`, `dedupeScope`, and `refreshIndex`. `refreshIndex=0` reads SQLite only;
-`refreshIndex=1` refreshes the index first. The default remains `1` for API compatibility.
-Rolling ranges use one-minute time buckets, and `today` changes at midnight in the target timezone.
+`GET /api/usage` is snapshot-only by default and does not refresh the index. The compatibility
+parameter `refreshIndex=1` can still explicitly refresh before returning the query. New callers
+should use `POST /api/index/refresh` for the write operation and keep GETs read-only.
+
+Common query parameters are `range`, `sourceScope` (`all`, `local`, `wsl`, or `windows`), `from`,
+`to`, `group`, `sort`, `asc`, `desc`, `limit`, `dedupeScope`, and `refreshIndex`. The default
+`refreshIndex` behavior is equivalent to `0`; `1` is the temporary compatibility alias described
+above. Rolling ranges use one-minute time buckets, and `today` changes at midnight in the target
+timezone.
 
 Example:
 
@@ -340,14 +361,16 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 The response keeps existing fields and adds `assumedModels`, `unpricedModels`, provisional-price
 totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffectiveFrom`,
 `refreshStatus`, and `usedFallback`. Performance metadata includes `indexRefreshSkipped`,
-`queryCacheHit`, `costCacheHit`, phase durations, incremental/full-rescan counts, and scanned bytes.
-On a result-cache hit, phase durations are zero and `totalDurationMs` measures the current request.
+`queryCacheHit`, `costCacheHit`, phase durations, incremental/full-rescan counts, scanned bytes,
+`unknownTimestampEvents`, `unknownTimestampTokens`, `excludedUnknownTimestampEvents`, and
+`excludedUnknownTimestampTokens`. On a result-cache hit, phase durations are zero and
+`totalDurationMs` measures the current request.
 
 ## Project structure
 
 ```text
 .
-├── bin/                          # CLI, web server, catalog, refresh, and pricing updater
+├── bin/                          # CLI, web server, aggregation, index views, catalog, and updater
 ├── pricing/                      # Built-in effective-dated price history
 ├── public/                       # Dashboard HTML, JavaScript, and CSS
 ├── test/                         # Node.js tests
@@ -402,12 +425,15 @@ results. Only **Refresh index** checks session files.
 npm ci
 npm test
 node --check bin/codex-token-usage.mjs
+node --check bin/codex-token-usage-core.mjs
 node --check bin/codex-usage-server.mjs
 node --check bin/openai-pricing.mjs
 node --check bin/pricing-catalog.mjs
 node --check bin/pricing-refresh.mjs
 node --check bin/session-scanner.mjs
+node --check bin/usage-aggregation.mjs
 node --check bin/usage-index.mjs
+node --check bin/usage-index-view.mjs
 node --check bin/usage-query.mjs
 node --check public/app.js
 npm run benchmark:index
