@@ -173,13 +173,12 @@ test("fully rebuilds unchanged legacy rows with current usage keys and cache wri
          ORDER BY file_path, event_index`,
       )
       .all();
-    assert.deepEqual(
-      storedEvents.map((row) => ({ ...row })),
-      sessionFiles.map(() => ({
-        total_usage_key: "1000:100:200:100:20:1100",
-        cache_write_input_tokens: 200,
-      })),
-    );
+    assert.equal(storedEvents.length, 2);
+    assert.equal(storedEvents[0].total_usage_key, storedEvents[1].total_usage_key);
+    for (const row of storedEvents) {
+      assert.match(row.total_usage_key, /^[0-9a-f]{64}\|1000:100:200:100:20:1100$/);
+      assert.equal(row.cache_write_input_tokens, 200);
+    }
 
     const freshSync = await ensureFreshIndex(freshIndex, [sessionsDir]);
     const [migratedPayload, freshPayload, directPayload] = await Promise.all([
@@ -498,7 +497,7 @@ test("keeps an incomplete trailing line for the next incremental scan", async (t
   }
 });
 
-test("isolates canonical scopes and applies date filters after representative selection", async (t) => {
+test("keeps unrelated same-token events distinct across dates and canonical scopes", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-scope-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const firstDir = path.join(directory, "a-sessions");
@@ -526,8 +525,9 @@ test("isolates canonical scopes and applies date filters after representative se
       fromMs: Date.parse("2026-08-19T00:00:00.000Z"),
     };
     const allPayload = usagePayloadFromIndex(index, sync, allOptions);
-    assert.equal(allPayload.totals.requests, 0);
-    assert.equal(allPayload.stats.globalDuplicateTokenEvents, 1);
+    assert.equal(allPayload.totals.requests, 1);
+    assert.equal(allPayload.rows[0].key, "gpt-5.6-terra");
+    assert.equal(allPayload.stats.globalDuplicateTokenEvents, 0);
 
     const secondSync = await ensureFreshIndex(index, [secondDir]);
     const secondPayload = usagePayloadFromIndex(index, secondSync, {
