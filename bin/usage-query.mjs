@@ -4,8 +4,8 @@ import {
   cachedIndexStats,
   ensureFreshIndex,
   invalidateUsageCaches,
-  usagePayloadFromIndex,
 } from "./usage-index.mjs";
+import { usagePayloadFromIndex } from "./usage-index-view.mjs";
 
 export const DEFAULT_QUERY_CACHE_ENTRIES = 64;
 
