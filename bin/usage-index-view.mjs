@@ -4,8 +4,8 @@ import { usagePayloadFromIndex as baseUsagePayloadFromIndex } from "./usage-inde
 import { aggregateUsageEvents } from "./usage-aggregation.mjs";
 
 export function usagePayloadFromIndex(index, syncStats, options) {
-  const startedAt = performance.now();
   const payload = baseUsagePayloadFromIndex(index, syncStats, options);
+  const correctionStartedAt = performance.now();
   const source = selectedSource(index, options);
   const unknown = unknownTimestampStats(index, source);
   const boundedRange = options.fromMs != null || options.toMs != null;
@@ -26,7 +26,7 @@ export function usagePayloadFromIndex(index, syncStats, options) {
   payload.assumedModels = result.assumedModels;
   payload.unpricedModels = result.unpricedModels;
   payload.stats.costCacheHit = false;
-  payload.stats.aggregationDurationMs += Math.round(performance.now() - startedAt);
+  payload.stats.aggregationDurationMs += Math.round(performance.now() - correctionStartedAt);
   return payload;
 }
 
