@@ -10,7 +10,7 @@ import {
   usageZero,
 } from "./usage-values.mjs";
 
-export const SESSION_SCANNER_VERSION = 2;
+export const SESSION_SCANNER_VERSION = 3;
 const EVENT_KEY_SEPARATOR = "|";
 
 function sessionIdFromPath(filePath) {
@@ -83,7 +83,8 @@ function processSessionLine(filePath, line, state, seenTotals, events, stats, { 
     !trailing &&
     !line.includes('"token_count"') &&
     !line.includes('"turn_context"') &&
-    !line.includes('"session_meta"')
+    !line.includes('"session_meta"') &&
+    !line.includes('"thread_settings_applied"')
   ) {
     return true;
   }
@@ -120,6 +121,18 @@ function processSessionLine(filePath, line, state, seenTotals, events, stats, { 
     };
     session.cwd = state.context.cwd || session.cwd;
     session.model = state.context.model || session.model;
+    return true;
+  }
+
+  if (obj.type === "event_msg" && obj.payload?.type === "thread_settings_applied") {
+    const model = obj.payload.thread_settings?.model;
+    if (typeof model === "string" && model.trim()) {
+      state.context = {
+        cwd: context.cwd || session.cwd,
+        model: model.trim(),
+      };
+      session.model = state.context.model;
+    }
     return true;
   }
 
