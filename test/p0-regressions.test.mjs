@@ -57,8 +57,18 @@ test("global event fingerprints preserve copied events but not unrelated same-to
 });
 
 test("missing-timestamp fingerprints use fallback identity", () => {
-  const first = usageEventFingerprint({ totalUsage: usage, lastUsage: usage, fallbackIdentity: "session-a" });
-  const second = usageEventFingerprint({ totalUsage: usage, lastUsage: usage, fallbackIdentity: "session-b" });
+  const first = usageEventFingerprint({
+    timestampMs: null,
+    totalUsage: usage,
+    lastUsage: usage,
+    fallbackIdentity: "session-a",
+  });
+  const second = usageEventFingerprint({
+    timestampMs: null,
+    totalUsage: usage,
+    lastUsage: usage,
+    fallbackIdentity: "session-b",
+  });
   assert.notEqual(first, second);
 });
 

@@ -57,7 +57,7 @@ export function usageEventFingerprint({
   lastUsage = null,
   fallbackIdentity = null,
 } = {}) {
-  const validTimestamp = Number.isFinite(Number(timestampMs));
+  const validTimestamp = timestampMs != null && Number.isFinite(Number(timestampMs));
   const identity = {
     timestamp_ms: validTimestamp ? Number(timestampMs) : null,
     total_usage: usageKey(totalUsage),
