@@ -222,13 +222,14 @@ export function discoverLocalSessionDirs({
   env = process.env,
   fs = nativeFs,
   codexHome = null,
+  includeArchived = false,
 } = {}) {
   const dirs = [];
   addCodexSessionDirs(
     dirs,
     localCodexHome({ platform, env, codexHome }),
     fs,
-    { includeArchived: false, platform },
+    { includeArchived, platform },
   );
   return normalizeSourceDirs(dirs, { platform });
 }
@@ -248,13 +249,26 @@ export function discoverSourceRegistry({
   codexHome = null,
 } = {}) {
   const local = discoverLocalSessionDirs({ platform, env, fs, codexHome });
+  const localWithArchived = discoverLocalSessionDirs({
+    platform,
+    env,
+    fs,
+    codexHome,
+    includeArchived: true,
+  });
   const wsl = discoverWslSessionDirs({ platform, env, fs, execFile, codexHome });
   const windows = discoverWindowsSessionDirs({ platform, env, fs });
   const configured = configuredSessionDirs({ platform, env });
+  const windowsScope = platform === "win32"
+    ? normalizeSourceDirs([...localWithArchived, ...windows], { platform })
+    : windows;
+  const discoveredAll = platform === "win32"
+    ? [...wsl, ...localWithArchived, ...windows]
+    : [...wsl, ...windows];
   const all = configured.length > 0
     ? configured
-    : normalizeSourceDirs([...wsl, ...windows], { platform });
-  return { all, local, wsl, windows };
+    : normalizeSourceDirs(discoveredAll, { platform });
+  return { all, local, wsl, windows: windowsScope };
 }
 
 export const DEFAULT_WINDOWS_USERS_ROOT = windowsUsersRoot();

@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseArgs } from "../bin/codex-token-usage.mjs";
-import { initializeDashboard, optionsFromQuery, runUsage } from "../bin/codex-usage-server.mjs";
+import {
+  initializeDashboard,
+  optionsFromQuery,
+  refreshSourceRegistry,
+  runUsage,
+} from "../bin/codex-usage-server.mjs";
 import { closeUsageIndex, ensureFreshIndex, openUsageIndex } from "../bin/usage-index.mjs";
 import { createUsageQueryService } from "../bin/usage-query.mjs";
 
@@ -266,6 +271,64 @@ test("web startup indexes logs before refreshing newly observed models", async (
   );
   const warmed = await dashboard.queryService.query(warmedOptions, { refreshIndex: false });
   assert.equal(warmed.stats.queryCacheHit, true);
+});
+
+test("refresh rediscovery finds a local sessions directory created after startup", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-dashboard-late-sessions-test-"));
+  let dashboard = null;
+  t.after(async () => {
+    closeUsageIndex(dashboard?.usageIndex);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const envKeys = [
+    "CODEX_HOME",
+    "CODEX_USAGE_SESSIONS",
+    "CODEX_USAGE_WINDOWS_ROOT",
+    "CODEX_USAGE_WSL_DISTROS",
+  ];
+  const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+  process.env.CODEX_HOME = directory;
+  delete process.env.CODEX_USAGE_SESSIONS;
+  process.env.CODEX_USAGE_WINDOWS_ROOT = path.join(directory, "windows-users");
+  process.env.CODEX_USAGE_WSL_DISTROS = "CodexUsageMissingDistro";
+  t.after(() => {
+    for (const [key, value] of previousEnv) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  dashboard = await initializeDashboard({
+    dbPath: path.join(directory, "cache.sqlite"),
+    enableGc: false,
+    initializePricingImpl: async () => {},
+    refreshPricingImpl: async () => ({ warning: null, refreshStatus: "fresh" }),
+  });
+  assert.deepEqual(dashboard.sourceRegistry.local, []);
+
+  const sessionsDir = path.join(directory, "sessions");
+  await mkdir(sessionsDir, { recursive: true });
+  await writeFile(
+    path.join(sessionsDir, "rollout.jsonl"),
+    sessionText("late-session", "late-model", directory, usage(100, 10)),
+  );
+
+  refreshSourceRegistry(dashboard.sourceRegistry);
+  assert.deepEqual(dashboard.sourceRegistry.local, [sessionsDir]);
+
+  const payload = await runUsage(
+    dashboard.queryService,
+    new URLSearchParams({
+      sourceScope: "local",
+      group: "model",
+      sort: "total",
+      refreshIndex: "1",
+    }),
+    dashboard.sourceRegistry,
+  );
+  assert.equal(payload.totals.requests, 1);
+  assert.equal(payload.totals.total_tokens, 110);
 });
 
 async function usageFixture(t) {

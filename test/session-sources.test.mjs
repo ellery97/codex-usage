@@ -39,6 +39,31 @@ test("discovers native Windows sessions without converting them to a WSL path", 
   assert.equal(dirs.some((dir) => dir.includes("mnt")), false);
 });
 
+test("includes a custom Windows Codex home in the Windows and all scopes", () => {
+  const windowsRoot = String.raw`C:\Users`;
+  const customHome = String.raw`D:\CodexHome`;
+  const customSessions = path.win32.join(customHome, "sessions");
+  const customArchived = path.win32.join(customHome, "archived_sessions");
+  const windowsSessions = String.raw`C:\Users\Windows11\.codex\sessions`;
+  const registry = discoverSourceRegistry({
+    platform: "win32",
+    codexHome: customHome,
+    env: {
+      USERPROFILE: String.raw`C:\Users\Windows11`,
+      USERNAME: "Windows11",
+      CODEX_USAGE_WSL_DISTROS: "",
+    },
+    fs: fakeFs({
+      existing: [customSessions, customArchived, windowsSessions],
+      directories: { [windowsRoot]: ["Windows11"] },
+    }),
+    execFile: () => { throw new Error("no wsl"); },
+  });
+
+  assert.deepEqual(registry.windows, [customSessions, customArchived, windowsSessions]);
+  assert.deepEqual(registry.all, [customSessions, customArchived, windowsSessions]);
+});
+
 test("discovers local WSL and mounted Windows directories on POSIX", () => {
   const wslHome = "/home/gejunzhe/.codex";
   const windowsRoot = "/mnt/c/Users";

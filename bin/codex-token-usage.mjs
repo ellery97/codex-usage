@@ -94,8 +94,7 @@ function envSessionDirs() {
 }
 
 function defaultSessionDirs(codexHome) {
-  const dirs = [...defaultWslSessionDirs({ codexHome }), ...defaultWindowsSessionDirs()];
-  return normalizeSessionDirs(dirs);
+  return normalizeSessionDirs(discoverSourceRegistry({ codexHome }).all);
 }
 
 function defaultTimezone() {

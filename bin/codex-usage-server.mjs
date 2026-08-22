@@ -39,6 +39,7 @@ const GROUPS = new Set(["none", "day", "month", "model", "cwd", "session"]);
 const SORTS = new Set(["key", "total", "input", "output", "cached", "reasoning", "requests", "sessions", "cost"]);
 const DEDUPE_SCOPES = new Set(["global", "file"]);
 const SOURCE_SCOPES = new Set(["all", "local", "wsl", "windows"]);
+const SOURCE_SCOPE_KEYS = ["all", "local", "wsl", "windows"];
 const RANGE_TO_LAST = new Map([
   ["24h", "24h"],
   ["7d", "7d"],
@@ -169,6 +170,15 @@ export function discoverSourceRegistry() {
   });
 }
 
+export function refreshSourceRegistry(sourceRegistry = null) {
+  const discovered = discoverSourceRegistry();
+  if (!sourceRegistry) return discovered;
+  for (const sourceScope of SOURCE_SCOPE_KEYS) {
+    sourceRegistry[sourceScope] = discovered[sourceScope] || [];
+  }
+  return sourceRegistry;
+}
+
 async function serveStatic(req, res, pathname) {
   const safePathname = pathname === "/" ? "/index.html" : pathname;
   const filePath = path.resolve(PUBLIC_DIR, safePathname.replace(/^\/+/, ""));
@@ -236,10 +246,13 @@ export async function startDashboard({ port = PORT, host = HOST, ...initializeOp
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
     try {
       if (url.pathname === "/api/usage") {
+        const sourceRegistry = url.searchParams.get("refreshIndex") === "0"
+          ? dashboard.sourceRegistry
+          : refreshSourceRegistry(dashboard.sourceRegistry);
         const payload = await runUsage(
           dashboard.queryService,
           url.searchParams,
-          dashboard.sourceRegistry,
+          sourceRegistry,
         );
         json(res, 200, payload);
         return;
