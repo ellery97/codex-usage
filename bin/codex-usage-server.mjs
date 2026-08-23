@@ -11,6 +11,12 @@ import {
   defaultWslSessionDirs,
   discoverSourceRegistry as discoverSessionSourceRegistry,
 } from "./codex-token-usage.mjs";
+import {
+  DEFAULT_PORT,
+  listenWithFallback,
+  parsePort,
+  resolvePortConfig,
+} from "./server-port.mjs";
 import { parseArgs } from "./usage-options.mjs";
 import {
   closeUsageIndex,
@@ -28,7 +34,6 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 const PUBLIC_DIR = path.join(ROOT, "public");
 
-const PORT = Number(process.env.PORT || process.env.CODEX_USAGE_PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
 const SCAN_CHECK_TTL_MS = Number(process.env.CODEX_USAGE_SCAN_CHECK_TTL_MS || 1000);
 const SCAN_CONCURRENCY = Math.max(1, Math.min(32, Number(process.env.CODEX_USAGE_SCAN_CONCURRENCY || 8)));
@@ -319,10 +324,15 @@ export async function initializeDashboard({
   }
 }
 
-export async function startDashboard({ port = PORT, host = HOST, ...initializeOptions } = {}) {
+export async function startDashboard(options = {}) {
+  const { port: requestedPort, host = HOST, ...initializeOptions } = options;
+  const portConfig = requestedPort === undefined
+    ? resolvePortConfig()
+    : { port: parsePort(requestedPort, "port"), explicit: true, source: "options" };
   const dashboard = await initializeDashboard(initializeOptions);
-  const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
+  let boundPort = portConfig.port || DEFAULT_PORT;
+  const requestHandler = async (req, res) => {
+    const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${boundPort}`}`);
     try {
       if (url.pathname === "/api/usage") {
         if (req.method !== "GET") {
@@ -371,24 +381,24 @@ export async function startDashboard({ port = PORT, host = HOST, ...initializeOp
         error: statusCode >= 500 ? "Internal server error" : error.message,
       });
     }
-  });
-  server.once("close", () => closeUsageIndex(dashboard.usageIndex));
+  };
 
   try {
-    await new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, host, () => {
-        server.off("error", reject);
-        resolve();
-      });
+    const listening = await listenWithFallback({
+      createServer: () => http.createServer(requestHandler),
+      host,
+      port: portConfig.port,
+      explicit: portConfig.explicit,
     });
+    boundPort = listening.port;
+    listening.server.once("close", () => closeUsageIndex(dashboard.usageIndex));
+    console.log(`Codex usage dashboard: http://${host}:${boundPort}`);
+    console.log(`SQLite index: ${dashboard.usageIndex.dbPath}`);
+    return { ...dashboard, server: listening.server, port: boundPort };
   } catch (error) {
     closeUsageIndex(dashboard.usageIndex);
     throw error;
   }
-  console.log(`Codex usage dashboard: http://${host}:${port}`);
-  console.log(`SQLite index: ${dashboard.usageIndex.dbPath}`);
-  return { ...dashboard, server };
 }
 
 async function prewarmDashboardScopes(index, sourceRegistry) {

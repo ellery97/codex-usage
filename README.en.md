@@ -69,7 +69,16 @@ Start the local web dashboard:
 npm run web
 ```
 
-Open <http://127.0.0.1:8787> in a browser.
+You can also choose the port at startup:
+
+```bash
+npm run web -- --port 8899
+# or
+npm run web -- -p 8899
+```
+
+Open the actual URL printed by the server startup log. When the default port is available, it is
+<http://127.0.0.1:8787>.
 
 Run the smoke check:
 
@@ -309,6 +318,13 @@ Primary references:
 - <https://alignment.openai.com/auto-review/>
 
 ## Web environment variables
+
+Port precedence is command-line `--port`/`-p`, then `PORT`, then `CODEX_USAGE_PORT`, and finally
+the default `8787`. An explicitly selected port fails fast if it cannot be bound, so scripts and
+reverse proxies do not silently switch ports. Without an explicit port, an unavailable or reserved
+`8787` falls back to `9787`, `3000`, and `5000`, then asks the operating system for a temporary port;
+the actual URL is printed to the console. Port values must be integers from `0` through `65535`;
+`0` requests an operating-system-assigned temporary port.
 
 | Variable | Default | Description |
 | --- | --- | --- |
