@@ -9,6 +9,12 @@ A local CLI and web dashboard for analyzing Codex token usage and estimating API
 It reads Codex session logs on the local machine and never uploads session content. At startup it
 only contacts fixed official OpenAI model-documentation URLs to validate public prices.
 
+## Dashboard preview
+
+![Codex Token Usage Dashboard preview](docs/dashboard-preview.png)
+
+The image uses sample session data and is provided only to show the current Web dashboard rendering.
+
 ## Data sources
 
 By default, the tool discovers every accessible source for the current runtime. The `all` scope
@@ -48,7 +54,8 @@ metadata. Session bodies are not printed or uploaded.
 
 ## Requirements
 
-- Node.js 22 or later, including the built-in `node:sqlite` module.
+- Node.js 22 or later, including the built-in `node:sqlite` module; the project has been verified with
+  `v22.22.0`.
 - No third-party runtime npm dependencies are required.
 - At least one accessible Codex session directory. The default starts at `~/.codex` on WSL/Linux,
   scans `C:\Users\*\.codex` on native Windows, and discovers the other environment when available.
@@ -78,7 +85,11 @@ npm run web -- -p 8899
 ```
 
 Open the actual URL printed by the server startup log. When the default port is available, it is
-<http://127.0.0.1:8787>.
+the following:
+
+```text
+http://127.0.0.1:8787
+```
 
 Run the smoke check:
 
@@ -101,11 +112,20 @@ npm run usage
 npm run web
 ```
 
-The default macOS source is `~/.codex/sessions`. If the logs are elsewhere, use
-`CODEX_HOME=/path/to/.codex npm run usage` or pass `--sessions` explicitly.
-Node.js 22 or later is required; the project was verified with `v22.22.0`.
-No third-party npm dependencies or OpenAI API key are required. Startup only downloads fixed
-official model Markdown pages for price validation and never uploads log content.
+Then open:
+
+```text
+http://127.0.0.1:8787
+```
+
+Notes:
+
+- Node.js 22 or later is required; the project has been verified with `v22.22.0`.
+- No third-party npm dependencies are required, so `npm install` is normally unnecessary.
+- The default macOS source is `~/.codex/sessions`. If the logs are elsewhere, use
+  `CODEX_HOME=/path/to/.codex npm run usage` or pass `--sessions` explicitly.
+- No OpenAI API key is required. Startup only downloads fixed official model Markdown pages for
+  price validation and never uploads session data.
 
 ## Web dashboard
 
@@ -124,8 +144,9 @@ rescan of that file. An incomplete trailing JSON line remains pending until the 
 
 Initial UI loading and filter changes use the current SQLite snapshot without touching JSONL.
 Source, range, grouping, sorting, direction, and deduplication apply automatically; row limits and
-custom dates use a 200ms debounce. New logs written after startup appear only after the user clicks
-**Refresh index**, which invalidates the cost and result caches.
+custom dates use a 200ms debounce. New logs written after startup do not enter the statistics until
+the user clicks **Refresh index**, which checks files, reads appended bytes, and clears the query
+cache.
 
 The `24h`, `7d`, `30d`, and `12w` Web ranges roll in one-minute buckets: requests within a minute
 reuse a stable boundary, while the next minute gets a new cache key. `today` starts at midnight in
@@ -138,7 +159,8 @@ upgrade fully rereads each existing JSONL file to recover cache-write values, ev
 cumulative-token key suffixes, and resumable parser state. Each converted file commits
 independently; once conversion finishes, ordinary appends return to incremental reads.
 
-The source selector supports all directories, WSL/Linux, and Windows (including archived sessions).
+The source selector supports all directories, WSL/Linux, and Windows. The WSL/Linux and Windows
+scopes each include the accessible current and archived session directories for that environment.
 The API keeps `sourceScope=local` for compatibility; it means the current session directory of the
 runtime environment.
 `.codex-usage/` is ignored by Git and should never be committed.
@@ -201,7 +223,7 @@ Available options:
 | `--today` | Start at midnight in `--timezone` |
 | `--group VALUE` | `none`, `day`, `month`, `model`, `cwd`, or `session` |
 | `--sort VALUE` | `key`, `total`, `input`, `output`, `cached`, `reasoning`, `requests`, `sessions`, or `cost` |
-| `--asc`, `--desc` | Sort direction |
+| `--asc`, `--desc` | Sort direction; date groups default to ascending and other groups to descending |
 | `--limit N` | Maximum number of rows; `0` means unlimited |
 | `--dedupe-scope VALUE` | `global` or `file`; defaults to `global` |
 | `--timezone`, `--tz TZ` | Timezone for date grouping and `--today` |
@@ -276,8 +298,13 @@ Built-in history lives at `pricing/openai-pricing.snapshot.json`. Runtime valida
 `.codex-usage/pricing-history.json` beside the SQLite database. The web server refreshes before
 listening, while the CLI refreshes before aggregation and output; `--help` stays offline. Refreshes
 use at most six concurrent requests, an eight-second overall timeout, and conditional
-`ETag`/`Last-Modified` requests. Partial or complete network failure falls back to the most recent
-validated local versions.
+`ETag`/`Last-Modified` requests. Successful models are still updated when only some pages fail;
+failed models keep their most recently validated versions. A fully offline refresh falls back to the
+local catalog.
+
+Runtime cache updates use a lock file, a same-directory temporary file, and an atomic rename. A
+corrupt runtime cache is first preserved as `.corrupt-<timestamp>` before falling back to the built-in
+catalog; an invalid built-in catalog fails startup explicitly.
 
 ```text
 official cost =
@@ -295,9 +322,10 @@ Codex credits, or actual billing. They exclude Batch, Flex, Fast, regional uplif
 account-specific discounts.
 
 `codex-auto-review` has no independently published price and never contributes to
-`estimated_cost_usd`. Its labelled reference route uses GPT-5.4 as the baseline from 2026-04-23,
-then GPT-5.6 Luna from 2026-07-30 with lower evidence; GPT-5.6 Sol is the upper bound in both
-periods. Cross-period results expose each route separately in `assumedModels[].routes`.
+`estimated_cost_usd`. Its labelled reference route uses GPT-5.4 Thinking with low reasoning as the
+baseline from 2026-04-23, then GPT-5.6 Luna from 2026-07-30 with lower evidence; GPT-5.6 Sol is the
+upper bound in both periods. Cross-period results expose each route separately in
+`assumedModels[].routes`.
 
 Refresh the runtime catalog or inspect changes without writing:
 
@@ -306,10 +334,19 @@ npm run update-pricing
 npm run update-pricing -- --check
 ```
 
-After verifying an authoritative effective date, seed a formal built-in version with
-`--seed --model ... --effective-from YYYY-MM-DD --source-url ...`. The updater and startup refresh
-share the same strict parser: it reads only `Pricing / Text tokens` and requires the page's
-`Model ID` to match exactly.
+After verifying an authoritative effective date, seed a formal built-in version:
+
+```bash
+npm run update-pricing -- \
+  --seed \
+  --model gpt-5.6-terra \
+  --effective-from 2026-07-30 \
+  --source-url https://openai.com/index/gpt-5-6/
+```
+
+The updater and startup refresh share the same strict parser: it reads only `Pricing / Text tokens`
+and requires the page's `Model ID` to match exactly. A formal version retains the replaced
+first-observed provisional record for audit, while selectors ignore superseded versions.
 
 Primary references:
 
@@ -330,7 +367,7 @@ the actual URL is printed to the console. Port values must be integers from `0` 
 | --- | --- | --- |
 | `PORT` | `8787` | Web port; takes precedence over `CODEX_USAGE_PORT` |
 | `CODEX_USAGE_PORT` | `8787` | Web port |
-| `HOST` | `127.0.0.1` | Listen address; the server has no authentication |
+| `HOST` | `127.0.0.1` | Listen address; the server has no authentication, so do not bind `0.0.0.0` or expose it to an untrusted network |
 | `CODEX_USAGE_DB` | `.codex-usage/cache.sqlite` | SQLite index path |
 | `CODEX_USAGE_PRICING_CACHE` | `pricing-history.json` beside the database | Runtime versioned pricing catalog |
 | `CODEX_USAGE_PRICING_TIMEOUT_MS` | `8000` | Overall startup pricing-refresh timeout in milliseconds |
@@ -349,6 +386,12 @@ Example:
 CODEX_USAGE_PORT=8788 CODEX_USAGE_DB=/tmp/codex-usage.sqlite npm run web
 ```
 
+Explicitly select multiple source directories:
+
+```bash
+CODEX_USAGE_SESSIONS="$HOME/.codex/sessions:/mnt/c/Users/<WindowsUsername>/.codex/sessions:/mnt/c/Users/<WindowsUsername>/.codex/archived_sessions" npm run web
+```
+
 ## API
 
 The web server exposes:
@@ -362,11 +405,24 @@ POST /api/index/refresh
 parameter `refreshIndex=1` can still explicitly refresh before returning the query. New callers
 should use `POST /api/index/refresh` for the write operation and keep GETs read-only.
 
-Common query parameters are `range`, `sourceScope` (`all`, `local`, `wsl`, or `windows`), `from`,
-`to`, `group`, `sort`, `asc`, `desc`, `limit`, `dedupeScope`, and `refreshIndex`. The default
-`refreshIndex` behavior is equivalent to `0`; `1` is the temporary compatibility alias described
-above. Rolling ranges use one-minute time buckets, and `today` changes at midnight in the target
-timezone.
+Common query parameters:
+
+| Parameter | Example | Description |
+| --- | --- | --- |
+| `range` | `all`, `today`, `24h`, `7d`, `30d`, `12w`, `custom` | Time range; rolling ranges update by minute |
+| `sourceScope` | `all`, `local`, `wsl`, `windows` | Source scope; `local` is retained for compatibility, while `wsl` and `windows` select explicit environments |
+| `from` | `2026-04-01` | Start date for `range=custom` |
+| `to` | `2026-04-30` | End date for `range=custom` |
+| `group` | `day` | Grouping mode |
+| `sort` | `total` | Sort field |
+| `asc` / `desc` | `1` | Sort direction |
+| `limit` | `60` | Number of output rows |
+| `dedupeScope` | `global` | Deduplication scope |
+| `refreshIndex` | `0`, `1` | Compatibility parameter; omitted/`0` reads the snapshot, while `1` refreshes before querying |
+
+The default `refreshIndex` behavior is equivalent to `0`; `1` is the temporary compatibility alias
+described above. Rolling ranges use one-minute time buckets, and `today` changes at midnight in the
+target timezone.
 
 Example:
 
@@ -375,9 +431,10 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 ```
 
 The response keeps existing fields and adds `assumedModels`, `unpricedModels`, provisional-price
-totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffectiveFrom`,
-`refreshStatus`, and `usedFallback`. Performance metadata includes `indexRefreshSkipped`,
-`queryCacheHit`, `costCacheHit`, phase durations, incremental/full-rescan counts, scanned bytes,
+totals, and event-time catalog metadata such as `pricing.mode = "event-time"`, `checkedAt`,
+`latestEffectiveFrom`, `refreshStatus`, and `usedFallback`. Performance metadata includes
+`indexRefreshSkipped`, `queryCacheHit`, `costCacheHit`, `scanDurationMs`, `dedupeDurationMs`,
+`aggregationDurationMs`, `totalDurationMs`, `incrementalFiles`, `fullRescanFiles`, `scannedBytes`,
 `unknownTimestampEvents`, `unknownTimestampTokens`, `excludedUnknownTimestampEvents`, and
 `excludedUnknownTimestampTokens`. On a result-cache hit, phase durations are zero and
 `totalDurationMs` measures the current request.
@@ -386,11 +443,28 @@ totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffe
 
 ```text
 .
-├── bin/                          # CLI, web server, aggregation, index views, catalog, and updater
-├── pricing/                      # Built-in effective-dated price history
-├── public/                       # Dashboard HTML, JavaScript, and CSS
-├── test/                         # Node.js tests
-├── .github/                      # CI, Dependabot, and contribution templates
+├── bin/
+│   ├── codex-token-usage.mjs      # Public CLI entry point
+│   ├── codex-token-usage-core.mjs # Options, sources, and shared utilities
+│   ├── codex-usage-server.mjs     # Local Web server and startup prewarming
+│   ├── session-scanner.mjs        # Resumable incremental JSONL scanner
+│   ├── usage-aggregation.mjs      # Direct/cache-consistent aggregation and CLI output
+│   ├── usage-index.mjs            # SQLite index, migrations, and costed slices
+│   ├── usage-index-view.mjs       # Unknown-time correctness layer for index queries
+│   ├── usage-canonical.mjs        # Persistent global deduplication scopes
+│   ├── usage-query.mjs            # Read-only query LRU and cache path
+│   ├── openai-pricing.mjs         # Pricing catalog service entry point
+│   ├── pricing-catalog.mjs        # Version selection and event-time pricing
+│   ├── pricing-refresh.mjs        # Official model Markdown validation and runtime cache
+│   └── update-pricing.mjs         # Manual pricing updater
+├── pricing/
+│   └── openai-pricing.snapshot.json # Built-in versioned price history
+├── public/
+│   ├── index.html                 # Dashboard page
+│   ├── app.js                     # Front-end interaction, charts, and table rendering
+│   └── styles.css                 # Page styles
+├── test/                           # Pricing, refresh, and aggregation boundary tests
+├── .github/                        # CI, Dependabot, and issue/PR templates
 ├── LICENSE
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
@@ -398,8 +472,8 @@ totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffe
 ├── CODE_OF_CONDUCT.md
 ├── package.json
 ├── package-lock.json
-├── README.md
-└── README.en.md
+├── README.en.md
+└── README.md
 ```
 
 ## Open-source collaboration
@@ -407,17 +481,20 @@ totals, and event-time catalog metadata such as `pricing.checkedAt`, `latestEffe
 - Contribution workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 - Private vulnerability reports: [SECURITY.md](SECURITY.md).
 - Community standards: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-- Never commit session JSONL files, SQLite databases, prompts, credentials, or personal data.
+- This project only processes local Codex logs; never commit session JSONL files, SQLite databases,
+  prompts, credentials, or other personal data.
 
 ## FAQ
 
 ### Why is the first web page load slow?
 
 A first start with no index scans historical JSONL. Existing indexes migrate in place, but the first
-refresh after a scanner-version upgrade must fully reread each log to recover source fields and the
-correct deduplication key. A 23 GB history can therefore require about 23 GB of reads during that
-upgrade. Converted files commit independently, so an interrupted migration retries only stale files.
-Safe appends later read only new bytes; rewritten or invalidated files fall back to a full rescan.
+refresh after a scanner-version upgrade must fully reread each log to recover fields that the old
+index did not save, including cache-write values, event fingerprints, cumulative-token key suffixes,
+and resumable parser state. A 23 GB history can therefore require about 23 GB of reads during that
+upgrade. Successfully converted files commit independently, so an interrupted migration retries
+only files still on the old version. After migration, safe appends read only new bytes; rewritten
+files or invalid parser state fall back to a full rescan.
 
 ### Does the tool upload session content?
 
@@ -437,22 +514,53 @@ results. Only **Refresh index** checks session files.
 
 ## Development validation
 
+Install dependencies and run the complete check:
+
 ```bash
 npm ci
-npm test
+npm run check
+```
+
+The syntax check covers the CLI, core, server, options, source discovery, scanner, index, pricing,
+query, and front-end modules:
+
+```bash
+npm run check:syntax
+```
+
+Functional smoke and benchmark checks:
+
+```bash
+npm run smoke
+npm run benchmark:index
+node ./bin/codex-token-usage.mjs --group month --limit 1
+node ./bin/codex-token-usage.mjs --group month --limit 1 --csv
+```
+
+The explicit syntax commands are useful when diagnosing one module:
+
+```bash
 node --check bin/codex-token-usage.mjs
 node --check bin/codex-token-usage-core.mjs
 node --check bin/codex-usage-server.mjs
+node --check bin/date-bound-argv.mjs
 node --check bin/openai-pricing.mjs
+node --check bin/path-utils.mjs
 node --check bin/pricing-catalog.mjs
 node --check bin/pricing-refresh.mjs
+node --check bin/server-port.mjs
+node --check bin/session-sources.mjs
 node --check bin/session-scanner.mjs
+node --check bin/update-pricing.mjs
 node --check bin/usage-aggregation.mjs
+node --check bin/usage-canonical.mjs
+node --check bin/usage-costs.mjs
 node --check bin/usage-index.mjs
 node --check bin/usage-index-view.mjs
+node --check bin/usage-options.mjs
 node --check bin/usage-query.mjs
+node --check bin/usage-values.mjs
 node --check public/app.js
-npm run benchmark:index
 git diff --check
 ```
 
