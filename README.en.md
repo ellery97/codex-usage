@@ -77,7 +77,8 @@ npm run web -- --port 8899
 npm run web -- -p 8899
 ```
 
-Open <http://127.0.0.1:8787> in a browser.
+Open the actual URL printed by the server startup log. When the default port is available, it is
+<http://127.0.0.1:8787>.
 
 Run the smoke check:
 
