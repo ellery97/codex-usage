@@ -9,6 +9,12 @@
 统计输入、缓存读写、输出、推理输出、总 token、请求数、会话数、缓存命中率和参考金额，并提供
 命令行输出和本地 Web 仪表盘两种使用方式。
 
+## Dashboard 预览
+
+![Codex Token 用量 Dashboard 预览](docs/dashboard-preview.png)
+
+上图使用示例会话数据，仅用于展示当前 Web 仪表盘的实际渲染效果。
+
 默认会按运行环境发现可访问的数据源；“全部目录”会合并 WSL/Linux 与 Windows 两侧：
 
 ```text
