@@ -42,6 +42,12 @@ WSL/Linux 会检查可访问的 Windows 用户目录。
 - 默认自动发现并合并 WSL/Linux 与 Windows 两侧的当前会话和归档会话目录。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
 
+## 界面预览
+
+实际运行的 Web 仪表盘如下，包含数据源/时间范围筛选、Token 汇总卡片、趋势图、Token 构成和参考金额等核心信息。
+
+![Codex Token 用量 Web 仪表盘](docs/images/dashboard-preview.png)
+
 ## 环境要求
 
 - Node.js，需要支持内置 `node:sqlite` 的版本。当前项目已在 `v22.22.0` 下验证。
