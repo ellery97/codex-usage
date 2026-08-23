@@ -49,12 +49,14 @@ function validateTimezone(timezone) {
   }
 }
 
-function validatedDateKey(value) {
+function parseDateKey(value) {
   const match = DATE_ONLY.exec(value);
   if (!match) throw new Error(`Invalid date: ${value}`);
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
+  return match.slice(1).map(Number);
+}
+
+function validatedDateParts(value) {
+  const [year, month, day] = parseDateKey(value);
   const probe = new Date(Date.UTC(year, month - 1, day));
   if (
     probe.getUTCFullYear() !== year ||
@@ -63,27 +65,34 @@ function validatedDateKey(value) {
   ) {
     throw new Error(`Invalid date: ${value}`);
   }
-  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return [year, month, day];
 }
 
-function nextDateKey(value) {
-  const dateKey = validatedDateKey(value);
-  const [year, month, day] = dateKey.split("-").map(Number);
-  const probe = new Date(Date.UTC(year, month - 1, day));
-  probe.setUTCDate(probe.getUTCDate() + 1);
+function formatDateKey(year, month, day) {
   return [
-    String(probe.getUTCFullYear()).padStart(4, "0"),
-    String(probe.getUTCMonth() + 1).padStart(2, "0"),
-    String(probe.getUTCDate()).padStart(2, "0"),
+    String(year).padStart(4, "0"),
+    String(month).padStart(2, "0"),
+    String(day).padStart(2, "0"),
   ].join("-");
 }
 
+function validatedDateKey(value) {
+  return formatDateKey(...validatedDateParts(value));
+}
+
+function nextDateKey(value) {
+  const [year, month, day] = validatedDateParts(value);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  probe.setUTCDate(probe.getUTCDate() + 1);
+  return formatDateKey(
+    probe.getUTCFullYear(),
+    probe.getUTCMonth() + 1,
+    probe.getUTCDate(),
+  );
+}
+
 function startOfDateInTimezone(dateKey, timezone) {
-  const match = DATE_ONLY.exec(dateKey);
-  if (!match) throw new Error(`Invalid date: ${dateKey}`);
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
+  const [year, month, day] = parseDateKey(dateKey);
   const utcGuess = Date.UTC(year, month - 1, day);
   let low = utcGuess - 36 * 60 * 60 * 1000;
   let high = utcGuess + 36 * 60 * 60 * 1000;
