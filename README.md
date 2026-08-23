@@ -46,7 +46,7 @@ WSL/Linux 会检查可访问的 Windows 用户目录。
 
 实际运行的 Web 仪表盘如下，包含数据源/时间范围筛选、Token 汇总卡片、趋势图、Token 构成和参考金额等核心信息。
 
-![Codex Token 用量 Web 仪表盘](docs/images/dashboard-preview.webp)
+![Codex Token 用量 Web 仪表盘](docs/images/dashboard-preview.png)
 
 ## 环境要求
 
