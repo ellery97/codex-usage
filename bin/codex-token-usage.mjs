@@ -6,22 +6,18 @@ import { normalizeDateBoundArgv } from "./date-bound-argv.mjs";
 import { parseArgs as parseCoreArgs } from "./codex-token-usage-core.mjs";
 import {
   aggregateUsageEvents,
-  buildUsagePayload as buildRuntimeUsagePayload,
-  inRange as runtimeInRange,
+  buildUsagePayload,
+  inRange,
   runCli,
 } from "./usage-aggregation.mjs";
 
 export * from "./codex-token-usage-core.mjs";
-export { aggregateUsageEvents as aggregate, runtimeInRange as inRange };
+export { aggregateUsageEvents as aggregate, buildUsagePayload, inRange };
 
 const __filename = fileURLToPath(import.meta.url);
 
 export function parseArgs(argv, options = {}) {
   return parseCoreArgs(normalizeDateBoundArgv(argv), options);
-}
-
-export async function buildUsagePayload(options) {
-  return buildRuntimeUsagePayload(options);
 }
 
 function isDirectRun() {

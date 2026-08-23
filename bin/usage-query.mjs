@@ -28,6 +28,22 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
     return current;
   }
 
+  function cachedPayload(key, startedAt) {
+    const cached = resultCache.get(key);
+    if (!cached) return null;
+
+    resultCache.delete(key);
+    resultCache.set(key, cached);
+    const payload = structuredClone(cached);
+    resetCachedTimings(payload.stats, performance.now() - startedAt);
+    return payload;
+  }
+
+  function cachePayload(key, payload) {
+    resultCache.set(key, structuredClone(payload));
+    evictOldResults(resultCache, capacity);
+  }
+
   async function query(options, { refreshIndex = true } = {}) {
     const startedAt = performance.now();
     syncPricingVersion();
@@ -35,8 +51,7 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
     let syncStats;
     if (refreshIndex) {
       syncStats = await ensureFreshIndex(index, options.sessionsDirs, { force: true });
-      resultCache.clear();
-      invalidateUsageCaches(index);
+      clear();
     } else {
       // refreshIndex=false means "do not start a refresh", not "read a database
       // while another refresh is publishing file-by-file transactions". Waiting
@@ -49,21 +64,14 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
 
     const currentPricingVersion = syncPricingVersion();
     const key = resultCacheKey(index, options, currentPricingVersion);
-    const cached = resultCache.get(key);
-    if (cached) {
-      resultCache.delete(key);
-      resultCache.set(key, cached);
-      const payload = structuredClone(cached);
-      resetCachedTimings(payload.stats, performance.now() - startedAt);
-      return payload;
-    }
+    const cached = cachedPayload(key, startedAt);
+    if (cached) return cached;
 
     const payload = usagePayloadFromIndex(index, syncStats, options);
     payload.stats.indexRefreshSkipped = !refreshIndex;
     payload.stats.queryCacheHit = false;
     payload.stats.totalDurationMs = Math.round(performance.now() - startedAt);
-    resultCache.set(key, structuredClone(payload));
-    evictOldResults(resultCache, capacity);
+    cachePayload(key, payload);
     return payload;
   }
 
