@@ -1,3 +1,5 @@
+import { formatRange, rankingMetricForSort } from "./dashboard-formatters.js";
+
 const state = {
   data: null,
   rows: [],
@@ -243,7 +245,7 @@ function render() {
 
   text.sourceLabel.textContent = formatSource(data.source);
   text.sourceLabel.title = sourceTitle(data.source);
-  text.rangeLabel.textContent = `范围：${formatRange(data.range)}`;
+  text.rangeLabel.textContent = `范围：${formatRange(data.range, data.timezone)}`;
   text.updatedLabel.textContent = `更新时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`;
 
   text.totalTokens.textContent = compactNumber(totals.total_tokens);
@@ -328,21 +330,15 @@ function moneyRange(lower, upper) {
 
 function renderMainLegend(group, sort) {
   if (!els.mainLegend) return;
+  const rankingMetric = rankingMetricForSort(sort);
   const items = dateGroups.has(group)
     ? [
         ["legend-total", "总量"],
         ["legend-input", "输入"],
         ["legend-output", "输出"],
       ]
-    : [[sort === "cost" ? "swatch reasoning" : "legend-total", sort === "cost" ? "参考金额" : "总量"]];
+    : [[sort === "cost" ? "swatch reasoning" : "legend-total", rankingMetric.label]];
   els.mainLegend.innerHTML = items.map(([className, label]) => `<span><i class="${className}"></i>${label}</span>`).join("");
-}
-
-function formatRange(range) {
-  if (!range || (!range.from && !range.to)) return "全部";
-  const from = range.from ? range.from.slice(0, 10) : "开始";
-  const to = range.to ? range.to.slice(0, 10) : "当前";
-  return `${from} .. ${to}`;
 }
 
 function formatSource(source) {
@@ -556,7 +552,7 @@ function renderMainChart(rows, group, sort = "total") {
     drawTrend(ctx, width, height, [...rows].sort(compareDateRowsAsc));
   } else {
     state.hoverIndex = null;
-    drawBars(ctx, width, height, rows.slice(0, 18), sort === "cost" ? "reference_total_cost_usd" : "total_tokens");
+    drawBars(ctx, width, height, rows.slice(0, 18), rankingMetricForSort(sort).field);
   }
 }
 
