@@ -12,6 +12,7 @@ import {
 
 const JULY_9 = Date.parse("2026-07-09T00:00:00.000Z");
 const JULY_30 = Date.parse("2026-07-30T00:00:00.000Z");
+const SEPTEMBER_3 = Date.parse("2026-09-03T00:00:00.000Z");
 
 test("resolves only the official GPT-5.6 alias to Sol", () => {
   assert.equal(priceForModel("gpt-5.6", JULY_30).model, "gpt-5.6-sol");
@@ -35,6 +36,30 @@ test("selects GPT-5.6 historical prices at the UTC boundary", () => {
   assert.equal(priceForModel("gpt-5.6-terra", JULY_30 - 1).input, 2.5);
   assert.equal(priceForModel("gpt-5.6-terra", JULY_30).input, 2);
   assert.equal(priceForModel("gpt-5.6-sol", JULY_30).input, 5);
+});
+
+test("prices GPT-6 Astra from its launch boundary", () => {
+  assert.equal(priceForModel("gpt-6-astra", SEPTEMBER_3 - 1), null);
+  const price = priceForModel("gpt-6-astra", SEPTEMBER_3);
+  assert.equal(price.input, 10);
+  assert.equal(price.cachedInput, 1);
+  assert.equal(price.cacheWrite, 12.5);
+  assert.equal(price.output, 50);
+  assert.equal(price.provisional, false);
+});
+
+test("uses GPT-6 Astra long-context rates above 272K input tokens", () => {
+  const estimate = estimateUsageCostDetails(
+    "gpt-6-astra",
+    {
+      input_tokens: 300_000,
+      cached_input_tokens: 100_000,
+      cache_write_input_tokens: 50_000,
+      output_tokens: 100_000,
+    },
+    SEPTEMBER_3,
+  );
+  assert.equal(estimate.costUsd, 11.95);
 });
 
 test("prices cache reads, cache writes, ordinary input, and output separately", () => {
@@ -123,7 +148,7 @@ test("exposes event-time pricing metadata and compatibility updatedAt", () => {
   assert.equal(metadata.mode, "event-time");
   assert.equal(metadata.refreshStatus, "cached");
   assert.equal(metadata.updatedAt, metadata.checkedAt.slice(0, 10));
-  assert.equal(metadata.latestEffectiveFrom, "2026-07-30T00:00:00.000Z");
+  assert.equal(metadata.latestEffectiveFrom, "2026-09-03T00:00:00.000Z");
   assert.equal(metadata.longContextThresholdTokens, 272_000);
   assert.equal(metadata.assumedModels[0].assumedModel, "gpt-5.6-luna");
   assert.equal(metadata.assumedModels[0].routes.length, 2);
