@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "currency": "USD",
+  "basis": "OpenAI API Standard text-token pricing per 1M tokens",
+  "estimateLabel": "Event-time Standard API-equivalent estimate for local Codex token logs",
+  "checkedAt": "2026-09-03T00:00:00.000Z",
+  "updatedAt": "2026-09-03",
+  "sourceUrls": [
+    "https://developers.openai.com/api/docs/models/gpt-6-astra.md",
+    "https://openai.com/index/gpt-6-astra/"
+  ],
+  "assumptions": [],
+  "aliases": {},
+  "assumedRoutes": {},
+  "models": {
+    "gpt-6-astra": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6-astra.md",
+      "versions": [
+        {
+          "id": "gpt-6-astra-2026-09-03",
+          "effectiveFrom": "2026-09-03T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "input": 10,
+          "cachedInput": 1,
+          "cacheWrite": 12.5,
+          "output": 50,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 20,
+            "cachedInput": 2,
+            "cacheWrite": 25,
+            "output": 75
+          },
+          "sourceUrl": "https://openai.com/index/gpt-6-astra/",
+          "observedAt": "2026-09-03T00:00:00.000Z",
+          "contentHash": "official-release-2026-09-03",
+          "evidenceLevel": "official-release"
+        }
+      ]
+    }
+  }
+}
