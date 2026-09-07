@@ -148,7 +148,7 @@ test("exposes event-time pricing metadata and compatibility updatedAt", () => {
   assert.equal(metadata.mode, "event-time");
   assert.equal(metadata.refreshStatus, "cached");
   assert.equal(metadata.updatedAt, metadata.checkedAt.slice(0, 10));
-  assert.equal(metadata.latestEffectiveFrom, "2026-07-30T00:00:00.000Z");
+  assert.equal(metadata.latestEffectiveFrom, "2026-09-03T00:00:00.000Z");
   assert.equal(metadata.longContextThresholdTokens, 272_000);
   assert.equal(metadata.assumedModels[0].assumedModel, "gpt-5.6-luna");
   assert.equal(metadata.assumedModels[0].routes.length, 2);
