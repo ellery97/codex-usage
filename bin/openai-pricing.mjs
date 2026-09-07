@@ -19,6 +19,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 export const PRICING_SNAPSHOT_PATH = path.join(ROOT, "pricing", "openai-pricing.snapshot.json");
+export const GPT6_ASTRA_PRICING_SNAPSHOT_PATH = path.join(ROOT, "pricing", "gpt-6-astra.snapshot.json");
 export const DEFAULT_PRICING_CACHE_PATH = path.join(ROOT, ".codex-usage", "pricing-history.json");
 
 const BUILT_IN_SNAPSHOT = loadBuiltInSnapshot();
@@ -202,11 +203,16 @@ function pricingTimeoutMs() {
 
 function loadBuiltInSnapshot() {
   try {
-    return normalizePricingCatalog(JSON.parse(readFileSync(PRICING_SNAPSHOT_PATH, "utf8")), {
+    const base = normalizePricingCatalog(JSON.parse(readFileSync(PRICING_SNAPSHOT_PATH, "utf8")), {
       source: `built-in pricing catalog ${PRICING_SNAPSHOT_PATH}`,
     });
+    const gpt6Astra = normalizePricingCatalog(
+      JSON.parse(readFileSync(GPT6_ASTRA_PRICING_SNAPSHOT_PATH, "utf8")),
+      { source: `built-in pricing catalog ${GPT6_ASTRA_PRICING_SNAPSHOT_PATH}` },
+    );
+    return mergePricingCatalogs(base, gpt6Astra);
   } catch (error) {
-    throw new Error(`Failed to read pricing catalog at ${PRICING_SNAPSHOT_PATH}: ${error.message}`, {
+    throw new Error(`Failed to read built-in pricing catalog: ${error.message}`, {
       cause: error,
     });
   }
