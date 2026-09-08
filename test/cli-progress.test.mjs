@@ -59,19 +59,22 @@ test("daily usage entry reuses the index and keeps JSON/CSV stdout free of progr
 
 test("index progress distinguishes scanner upgrades and appends with exact read totals", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-index-progress-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  let index;
+  t.after(async () => {
+    closeUsageIndex(index);
+    await rm(directory, { recursive: true, force: true });
+  });
   const sessionsDir = path.join(directory, "sessions");
   await mkdir(sessionsDir);
   const upgradeFile = path.join(sessionsDir, "upgrade.jsonl");
   const appendPath = path.join(sessionsDir, "append.jsonl");
   const original = sessionText();
   await Promise.all([writeFile(upgradeFile, original), writeFile(appendPath, original)]);
-  const index = await openUsageIndex({
+  index = await openUsageIndex({
     dbPath: path.join(directory, "cache.sqlite"),
     scanCheckTtlMs: 0,
     enableGc: false,
   });
-  t.after(() => closeUsageIndex(index));
   await ensureFreshIndex(index, [sessionsDir]);
   index.db.prepare("UPDATE files SET scanner_version = ? WHERE path = ?")
     .run(SESSION_SCANNER_VERSION - 1, upgradeFile);

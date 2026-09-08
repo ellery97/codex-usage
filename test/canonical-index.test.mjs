@@ -16,7 +16,10 @@ test("canonical time ordering is covered by the index without a temporary sort",
     await rm(directory, { recursive: true, force: true });
   });
   index = await openUsageIndex({ dbPath: path.join(directory, "cache.sqlite"), enableGc: false });
-  const filter = sqlPathFilter("e.file_path", ["/fixture/sessions", "/fixture/archived_sessions"]);
+  const filter = sqlPathFilter("e.file_path", [
+    path.join(directory, "sessions"),
+    path.join(directory, "archived_sessions"),
+  ]);
   const plan = index.db.prepare(`
     EXPLAIN QUERY PLAN
     SELECT id, total_usage_key FROM (
@@ -41,15 +44,16 @@ test("opening an existing index replaces the obsolete order index without changi
     await rm(directory, { recursive: true, force: true });
   });
   index = await openUsageIndex({ dbPath, enableGc: false });
-  index.db.exec(`
+  index.db.prepare(`
     INSERT INTO events (
       file_path, event_index, timestamp_ms, session_id, total_usage_key, cwd, model,
       input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
     ) VALUES
-      ('/fixture/a-copy.jsonl', 0, 2000, 'copy', 'shared', '/fixture', 'model', 100, 0, 0, 10, 0, 110),
-      ('/fixture/z-original.jsonl', 0, 1000, 'original', 'shared', '/fixture', 'model', 100, 0, 0, 10, 0, 110);
-  `);
-  const initial = ensureCanonicalScope(index.db, ["/fixture"]);
+      (?, 0, 2000, 'copy', 'shared', ?, 'model', 100, 0, 0, 10, 0, 110),
+      (?, 0, 1000, 'original', 'shared', ?, 'model', 100, 0, 0, 10, 0, 110);
+  `).run(path.join(directory, "a-copy.jsonl"), directory, path.join(directory, "z-original.jsonl"), directory);
+  const initial = ensureCanonicalScope(index.db, [directory]);
+  assert.equal(initial.canonicalEvents, 1);
   const before = index.db.prepare("SELECT * FROM canonical_events ORDER BY scope_id, total_usage_key").all();
   closeUsageIndex(index);
   index = null;
@@ -69,7 +73,7 @@ test("opening an existing index replaces the obsolete order index without changi
   assert.ok(names.includes("idx_events_canonical_time_order"));
   assert.ok(!names.includes("idx_events_total_order"));
   index.db.prepare("UPDATE dedupe_scopes SET source_fingerprint = '' WHERE scope_id = ?").run(initial.scopeId);
-  const rebuilt = ensureCanonicalScope(index.db, ["/fixture"]);
+  const rebuilt = ensureCanonicalScope(index.db, [directory]);
   assert.equal(rebuilt.canonicalRebuilt, true);
   assert.equal(rebuilt.canonicalEvents, 1);
   assert.deepEqual(index.db.prepare("SELECT * FROM canonical_events ORDER BY scope_id, total_usage_key").all(), before);
