@@ -3,9 +3,9 @@ import path from "node:path";
 import { sqlPathFilter } from "./path-utils.mjs";
 
 const MAX_CACHED_SCOPES = 8;
-const CANONICAL_RULE_VERSION = 2;
+const CANONICAL_RULE_VERSION = 3;
 const CANONICAL_EVENT_ORDER =
-  "e.timestamp_ms IS NULL, e.timestamp_ms, e.file_path COLLATE BINARY, e.event_index";
+  "e.has_event_timestamp DESC, e.timestamp_ms IS NULL, e.timestamp_ms, e.file_path COLLATE BINARY, e.event_index";
 
 export const CANONICAL_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS dedupe_scopes (

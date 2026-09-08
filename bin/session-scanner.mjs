@@ -10,7 +10,7 @@ import {
   usageZero,
 } from "./usage-values.mjs";
 
-export const SESSION_SCANNER_VERSION = 5;
+export const SESSION_SCANNER_VERSION = 6;
 const EVENT_KEY_SEPARATOR = "|";
 const UNKNOWN_CWD = "(unknown cwd)";
 const UNKNOWN_MODEL = "(unknown model)";
@@ -325,6 +325,7 @@ function processSessionLine(
   const model = state.knownContext.model ? state.context.model || session.model : UNKNOWN_MODEL;
   const event = {
     timestampMs,
+    hasEventTimestamp,
     sessionCreatedAtMs: state.knownContext.sessionCreatedAtMs ? session.createdAtMs : null,
     sessionId: session.id,
     totalUsageKey: "",

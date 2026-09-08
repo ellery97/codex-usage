@@ -58,12 +58,14 @@ test("migrates old indexes in place without discarding derived rows", async (t) 
     const columns = index.db.prepare("PRAGMA table_info(events)").all().map((row) => row.name);
     const fileColumns = index.db.prepare("PRAGMA table_info(files)").all().map((row) => row.name);
     assert.ok(columns.includes("cache_write_input_tokens"));
+    assert.ok(columns.includes("has_event_timestamp"));
+    assert.equal(index.db.prepare("SELECT has_event_timestamp FROM events").get().has_event_timestamp, 0);
     assert.ok(fileColumns.includes("scan_offset"));
     assert.ok(fileColumns.includes("parser_state_json"));
     assert.equal(index.db.prepare("SELECT COUNT(*) AS count FROM events").get().count, 1);
     assert.equal(index.db.prepare("SELECT COUNT(*) AS count FROM files").get().count, 1);
     assert.equal(index.db.prepare("SELECT scanner_version FROM files").get().scanner_version, 0);
-    assert.equal(index.db.prepare("PRAGMA user_version").get().user_version, 3);
+    assert.equal(index.db.prepare("PRAGMA user_version").get().user_version, 4);
   } finally {
     closeUsageIndex(index);
   }

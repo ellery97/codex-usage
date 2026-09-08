@@ -3,12 +3,14 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { buildUsagePayload, parseArgs } from "../bin/codex-token-usage.mjs";
 import { scanSessionFile, scanSessionFileRange } from "../bin/session-scanner.mjs";
 import { ensureCanonicalScope } from "../bin/usage-canonical.mjs";
 import { closeUsageIndex, ensureFreshIndex, openUsageIndex } from "../bin/usage-index.mjs";
+import { usagePayloadFromIndex } from "../bin/usage-index-view.mjs";
 import { usageEventFingerprint, usageKey } from "../bin/usage-values.mjs";
 
 const firstUsage = usage(100_000, 80_000, 1_000);
@@ -185,6 +187,65 @@ test("earliest copied-event time controls month, price version, and bounded quer
   assert.equal(restored.stats.canonicalUpdatedKeys, 1);
 });
 
+for (const useCache of [false, true]) {
+  test(`${useCache ? "cached" : "direct"} dedupe prefers token time over earlier session fallbacks`, async (t) => {
+    const directory = await temporaryDirectory(t);
+    const originalFile = path.join(directory, "m-original.jsonl");
+    const originalTime = "2026-08-01T12:00:00.000Z";
+    const originalLines = sessionLines("original", "shared-turn", originalTime, "gpt-5.6-luna");
+    originalLines[0].timestamp = "2026-07-29T00:00:00.000Z";
+    await writeLines(originalFile, originalLines);
+    const options = {
+      ...parseArgs(["--sessions", directory, "--group", "month", "--timezone", "UTC", "--no-refresh-pricing"]),
+      useCache,
+      cacheDbPath: path.join(directory, "cache.sqlite"),
+    };
+    const baseline = await buildUsagePayload(options);
+    assert.equal(baseline.rows[0].key, "2026-08");
+    assert.equal(baseline.totals.reference_total_cost_usd, 0.0068);
+
+    // Cover missing/invalid token times, metadata arriving after the event,
+    // and copies sorted both before and after the original file.
+    for (const [name, time, lateMeta] of [
+      ["a-missing", undefined, false],
+      ["y-late-meta", null, true],
+      ["z-invalid", "invalid-timestamp", false],
+    ]) {
+      const meta = { ...sessionMeta(name), timestamp: "2026-07-29T00:00:00.000Z" };
+      const context = turnContext("shared-turn", "gpt-5.6-luna");
+      const event = tokenEvent(time, firstUsage, firstUsage);
+      await writeLines(path.join(directory, `${name}.jsonl`), lateMeta ? [context, event, meta] : [meta, context, event]);
+    }
+    const withCopies = await buildUsagePayload(options);
+    assert.deepEqual(withCopies.totals, baseline.totals);
+    assert.deepEqual(withCopies.rows, baseline.rows);
+    assert.equal(withCopies.stats.globalDuplicateTokenEvents, 3);
+    if (useCache) {
+      assert.equal(withCopies.stats.canonicalRebuilt, false);
+      assert.equal(withCopies.stats.canonicalUpdatedKeys, 1);
+      const cold = await buildUsagePayload({ ...options, cacheDbPath: path.join(directory, "cold.sqlite") });
+      assert.equal(cold.stats.canonicalRebuilt, true);
+      assert.deepEqual(cold.totals, baseline.totals);
+      assert.deepEqual(cold.rows, baseline.rows);
+    }
+    const august = await buildUsagePayload({ ...options, fromMs: Date.parse("2026-08-01T00:00:00.000Z") });
+    const july = await buildUsagePayload({ ...options, toMs: Date.parse("2026-08-01T00:00:00.000Z") });
+    assert.equal(august.totals.requests, 1);
+    assert.equal(july.totals.requests, 0);
+
+    // Preserve the existing fallback when no copy has a real token time.
+    await rm(originalFile);
+    const fallback = await buildUsagePayload(options);
+    assert.equal(fallback.totals.requests, 1);
+    assert.equal(fallback.rows[0].key, "2026-07");
+    assert.equal(fallback.totals.reference_total_cost_usd, 0.034);
+    await writeLines(originalFile, originalLines);
+    const restored = await buildUsagePayload(options);
+    assert.deepEqual(restored.totals, baseline.totals);
+    assert.deepEqual(restored.rows, baseline.rows);
+  });
+}
+
 test("a copy without any timestamp cannot displace a dated event", async (t) => {
   const directory = await temporaryDirectory(t);
   await writeLines(path.join(directory, "a-undated.jsonl"), [
@@ -208,6 +269,76 @@ test("a copy without any timestamp cannot displace a dated event", async (t) => 
   }
 });
 
+test("scanner v5 caches recover timestamp sources before resuming appends", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-timestamp-migration-"));
+  const dbPath = path.join(directory, "cache.sqlite");
+  let index;
+  t.after(async () => {
+    closeUsageIndex(index);
+    await rm(directory, { recursive: true, force: true });
+  });
+  const originalFile = path.join(directory, "a-original.jsonl");
+  const copyFile = path.join(directory, "z-copy.jsonl");
+  const eventTime = "2026-08-01T12:00:00.000Z";
+  const original = sessionLines("original", "shared-turn", eventTime, "gpt-5.6-luna");
+  // Equality with session creation time must not erase a real token timestamp.
+  original[0].timestamp = eventTime;
+  const copy = sessionLines("copy", "shared-turn", null, "gpt-5.6-luna");
+  copy[0].timestamp = "2026-07-29T00:00:00.000Z";
+  await writeLines(originalFile, original);
+  await writeLines(copyFile, copy);
+  index = await openUsageIndex({ dbPath, scanCheckTtlMs: 0, enableGc: false });
+  await ensureFreshIndex(index, [directory]);
+  closeUsageIndex(index);
+  index = null;
+
+  // Recreate v3 storage with valid v5 parser states and unchanged file metadata.
+  const legacy = new DatabaseSync(dbPath);
+  try {
+    legacy.exec(`
+      DROP INDEX idx_events_canonical_source_time_order;
+      ALTER TABLE events DROP COLUMN has_event_timestamp;
+      CREATE INDEX idx_events_canonical_time_order
+        ON events(total_usage_key, timestamp_ms IS NULL, timestamp_ms, file_path COLLATE BINARY, event_index);
+      PRAGMA user_version = 3;
+    `);
+    for (const row of legacy.prepare("SELECT path, parser_state_json FROM files").all()) {
+      const state = { ...JSON.parse(row.parser_state_json), scannerVersion: 5, requiredScannerVersion: 5 };
+      legacy.prepare("UPDATE files SET scanner_version = 5, parser_state_json = ? WHERE path = ?")
+        .run(JSON.stringify(state), row.path);
+    }
+  } finally {
+    legacy.close();
+  }
+
+  index = await openUsageIndex({ dbPath, scanCheckTtlMs: 0, enableGc: false });
+  const sync = await ensureFreshIndex(index, [directory]);
+  assert.equal(sync.fullRescanFiles, 2);
+  assert.equal(sync.incrementalFiles, 0);
+  const timestampSources = () => index.db.prepare(
+    "SELECT has_event_timestamp FROM events ORDER BY file_path, event_index",
+  ).all().map((row) => row.has_event_timestamp);
+  assert.deepEqual(timestampSources(), [1, 0]);
+  const options = parseArgs(["--sessions", directory, "--group", "month", "--timezone", "UTC", "--no-refresh-pricing"]);
+  const migrated = usagePayloadFromIndex(index, sync, options);
+  assert.equal(migrated.totals.reference_total_cost_usd, 0.0068);
+  assert.equal(migrated.rows[0].key, "2026-08");
+  assert.equal((await ensureFreshIndex(index, [directory])).scannedBytes, 0);
+
+  await appendFile(originalFile, encodeLines([tokenEvent("2026-08-02T12:00:00.000Z", secondTotal, secondUsage)]));
+  await appendFile(copyFile, encodeLines([tokenEvent("invalid-timestamp", secondTotal, secondUsage)]));
+  const appended = await ensureFreshIndex(index, [directory]);
+  assert.equal(appended.incrementalFiles, 2);
+  assert.equal(appended.fullRescanFiles, 0);
+  assert.deepEqual(timestampSources(), [1, 1, 0, 0]);
+  const cached = usagePayloadFromIndex(index, appended, options);
+  const direct = await buildUsagePayload(options);
+  assert.equal(cached.totals.requests, 2);
+  assert.equal(cached.rows[0].key, "2026-08");
+  assert.deepEqual(cached.totals, direct.totals);
+  assert.deepEqual(cached.rows, direct.rows);
+});
+
 test("canonical rule changes rebuild a legacy scope even with pending tracked changes", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-legacy-scope-"));
   let index;
@@ -217,14 +348,14 @@ test("canonical rule changes rebuild a legacy scope even with pending tracked ch
   });
   const copyFile = path.join(directory, "a-copy.jsonl");
   const originalFile = path.join(directory, "z-original.jsonl");
-  await writeLines(copyFile, sessionLines("copy", "shared-turn", copiedTimestamp));
+  await writeLines(copyFile, sessionLines("copy", "shared-turn", null));
   await writeLines(originalFile, sessionLines("original", "shared-turn", timestamp));
   index = await openUsageIndex({ dbPath: path.join(directory, "cache.sqlite"), enableGc: false });
   await ensureFreshIndex(index, [directory]);
   const initial = ensureCanonicalScope(index.db, [directory]);
 
-  // Recreate the prior rule's scope identity and path-first representative.
-  const legacyId = createHash("sha256").update(JSON.stringify([directory])).digest("hex");
+  // Version 2 cannot distinguish a session fallback from a real token time.
+  const legacyId = createHash("sha256").update(JSON.stringify({ version: 2, roots: [directory] })).digest("hex");
   for (const table of ["dedupe_scopes", "dedupe_scope_roots", "canonical_events"]) {
     index.db.prepare(`UPDATE ${table} SET scope_id = ? WHERE scope_id = ?`).run(legacyId, initial.scopeId);
   }

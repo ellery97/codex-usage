@@ -280,10 +280,12 @@ are counted once, while independent turns with identical usage remain distinct. 
 without a reliable turn ID fall back to the event timestamp, and additionally use session/cwd/model
 identity if the timestamp is also missing.
 
-Direct Scan and SQLite choose the earliest known timestamp for each event, placing unknown times
-last. Ties use the complete file path in binary order, then event order within the file. Selection
-happens before date filtering so a copy's write time cannot move historical usage into a later month
-or price version. Reversing `--sessions` arguments cannot change model, cwd, session, or cost attribution.
+Direct Scan and SQLite prefer valid `token_count` event timestamps and choose the earliest among
+them. Session creation times are used only when every copy lacks a valid event timestamp; completely
+unknown times come last. Ties in time source and timestamp use the complete file path in binary order,
+then event order within the file. Selection happens before date filtering, preventing a copy's write
+time or session creation fallback from displacing the original and changing its month or price version.
+Reversing `--sessions` arguments cannot change model, cwd, session, or cost attribution.
 
 Use `--dedupe-scope file` when inspecting the raw records of one JSONL file. Use the default
 `global` scope for long-term real-usage totals. Canonical selection happens before time filtering.
@@ -536,10 +538,11 @@ refresh after a scanner-version upgrade must fully reread each log to recover fi
 index did not save, including cache-write values, event fingerprints, cumulative-token key suffixes,
 and resumable parser state. A 23 GB history can therefore require about 23 GB of reads during that
 upgrade. Successfully converted files commit independently, so an interrupted migration retries
-only files still on the old version. Scanner version 5 rebuilds turn identities to stop charging
-copied history again when its timestamps have been rewritten; previously inflated totals can drop
-substantially. After migration, safe appends read only new bytes; rewritten files or invalid parser
-state fall back to a full rescan.
+only files still on the old version. Scanner version 6 rebuilds turn identities and preserves timestamp
+sources, fixing duplicate charges for copied history and preventing session creation fallbacks from
+displacing real request times. Previously inflated totals can drop substantially. Version 5 caches
+also require one scan to recover timestamp sources. After migration, safe appends read only new bytes;
+rewritten files or invalid parser state fall back to a full rescan.
 
 ### Does the tool upload session content?
 

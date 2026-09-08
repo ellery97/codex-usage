@@ -29,7 +29,7 @@ const ROOT = path.resolve(__dirname, "..");
 export const DEFAULT_DB_PATH = path.join(ROOT, ".codex-usage", "cache.sqlite");
 export const DEFAULT_SCAN_CHECK_TTL_MS = 1000;
 export const DEFAULT_SCAN_CONCURRENCY = 8;
-const USAGE_INDEX_SCHEMA_VERSION = 3;
+const USAGE_INDEX_SCHEMA_VERSION = 4;
 const BOUNDARY_HASH_BYTES = 64 * 1024;
 
 const COST_AGGREGATE_COLUMNS = `
@@ -84,6 +84,7 @@ export async function openUsageIndex({
         file_path TEXT NOT NULL,
         event_index INTEGER NOT NULL,
         timestamp_ms INTEGER,
+        has_event_timestamp INTEGER NOT NULL DEFAULT 0,
         session_created_at_ms INTEGER,
         session_id TEXT NOT NULL,
         total_usage_key TEXT NOT NULL,
@@ -99,9 +100,6 @@ export async function openUsageIndex({
 
       CREATE INDEX IF NOT EXISTS idx_events_file ON events(file_path);
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp_ms);
-      CREATE INDEX IF NOT EXISTS idx_events_canonical_time_order
-        ON events(total_usage_key, timestamp_ms IS NULL, timestamp_ms, file_path COLLATE BINARY, event_index);
-      DROP INDEX IF EXISTS idx_events_total_order;
       CREATE INDEX IF NOT EXISTS idx_events_model ON events(model);
       CREATE INDEX IF NOT EXISTS idx_events_cwd ON events(cwd);
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
@@ -195,9 +193,9 @@ export async function openUsageIndex({
       `),
       insertEvent: db.prepare(`
         INSERT INTO events (
-          file_path, event_index, timestamp_ms, session_created_at_ms, session_id, total_usage_key, cwd, model,
+          file_path, event_index, timestamp_ms, has_event_timestamp, session_created_at_ms, session_id, total_usage_key, cwd, model,
           input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
     },
   };
@@ -782,6 +780,7 @@ function insertEvents(index, filePath, events, startIndex) {
       filePath,
       startIndex + relativeIndex,
       event.timestampMs ?? null,
+      event.hasEventTimestamp ? 1 : 0,
       event.sessionCreatedAtMs ?? null,
       event.sessionId || "",
       event.totalUsageKey || "",
@@ -980,6 +979,11 @@ function migrateUsageIndexSchema(db) {
     if (!eventColumns.has("cache_write_input_tokens")) {
       db.exec("ALTER TABLE events ADD COLUMN cache_write_input_tokens INTEGER NOT NULL DEFAULT 0");
     }
+    if (!eventColumns.has("has_event_timestamp")) {
+      // A stored timestamp alone cannot distinguish an event time from a
+      // session fallback. Scanner version 6 recovers the source from JSONL.
+      db.exec("ALTER TABLE events ADD COLUMN has_event_timestamp INTEGER NOT NULL DEFAULT 0");
+    }
     addColumn(db, fileColumns, "scan_offset", "INTEGER NOT NULL DEFAULT 0");
     addColumn(db, fileColumns, "parser_state_json", "TEXT");
     addColumn(db, fileColumns, "scanner_version", "INTEGER NOT NULL DEFAULT 0");
@@ -987,6 +991,12 @@ function migrateUsageIndexSchema(db) {
     addColumn(db, fileColumns, "file_ino", "TEXT");
     addColumn(db, fileColumns, "boundary_hash", "TEXT");
     db.exec(CANONICAL_SCHEMA_SQL);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_events_canonical_source_time_order
+        ON events(total_usage_key, has_event_timestamp DESC, timestamp_ms IS NULL, timestamp_ms, file_path COLLATE BINARY, event_index);
+      DROP INDEX IF EXISTS idx_events_canonical_time_order;
+      DROP INDEX IF EXISTS idx_events_total_order;
+    `);
     db.exec(`PRAGMA user_version = ${USAGE_INDEX_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {

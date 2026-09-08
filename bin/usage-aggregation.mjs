@@ -214,10 +214,15 @@ export async function buildUsagePayload(options) {
         if (existing) {
           scanStats.globalDuplicateTokenEvents += 1;
         }
-        // Copies can carry a later timestamp than the original. Pick the
-        // earliest known time before filtering; ties retain the first event
-        // in binary file-path order, then event order within that file.
-        if (!existing || (event.timestampMs ?? Infinity) < (existing.timestampMs ?? Infinity)) {
+        // A real token time takes precedence over a session creation fallback.
+        // Then prefer the earliest known time; ties retain binary file-path
+        // order and event order within that file, before range filtering.
+        if (
+          !existing ||
+          (event.hasEventTimestamp && !existing.hasEventTimestamp) ||
+          (event.hasEventTimestamp === existing.hasEventTimestamp &&
+            (event.timestampMs ?? Infinity) < (existing.timestampMs ?? Infinity))
+        ) {
           canonicalEvents.set(event.totalUsageKey, event);
         }
       } else {
