@@ -99,7 +99,9 @@ export async function openUsageIndex({
 
       CREATE INDEX IF NOT EXISTS idx_events_file ON events(file_path);
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp_ms);
-      CREATE INDEX IF NOT EXISTS idx_events_total_order ON events(total_usage_key, file_path, event_index);
+      CREATE INDEX IF NOT EXISTS idx_events_canonical_time_order
+        ON events(total_usage_key, timestamp_ms IS NULL, timestamp_ms, file_path COLLATE BINARY, event_index);
+      DROP INDEX IF EXISTS idx_events_total_order;
       CREATE INDEX IF NOT EXISTS idx_events_model ON events(model);
       CREATE INDEX IF NOT EXISTS idx_events_cwd ON events(cwd);
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
@@ -226,7 +228,7 @@ export function modelsInUsageIndex(index, sessionsDirs = null) {
     .map((row) => String(row.model));
 }
 
-export async function ensureFreshIndex(index, sessionsDirs, { force = false } = {}) {
+export async function ensureFreshIndex(index, sessionsDirs, { force = false, onProgress = null } = {}) {
   const now = Date.now();
   const key = sessionsKey(sessionsDirs);
   if (!force && index.lastSync?.sessionsKey === key && now - index.checkedAt < index.scanCheckTtlMs) {
@@ -247,7 +249,7 @@ export async function ensureFreshIndex(index, sessionsDirs, { force = false } = 
   }
 
   index.refreshKey = key;
-  index.refreshPromise = refreshIndex(index, sessionsDirs, key).finally(() => {
+  index.refreshPromise = refreshIndex(index, sessionsDirs, key, onProgress).finally(() => {
     index.refreshPromise = null;
     index.refreshKey = null;
   });
@@ -483,9 +485,11 @@ function tempCostTableExists(index) {
   );
 }
 
-async function refreshIndex(index, sessionsDirs, key) {
+async function refreshIndex(index, sessionsDirs, key, onProgress) {
   const startedAt = Date.now();
+  onProgress?.({ phase: "discover" });
   const filePaths = await collectJsonlFiles(sessionsDirs);
+  onProgress?.({ phase: "check", files: filePaths.length });
   const currentPaths = new Set(filePaths);
   const knownFiles = new Map(index.statements.allFiles.all().map((row) => [row.path, row]));
 
@@ -513,13 +517,51 @@ async function refreshIndex(index, sessionsDirs, key) {
   let incrementalFiles = 0;
   let fullRescanFiles = 0;
   let scannedBytes = 0;
-  await mapLimit(fileStats, index.scanConcurrency, async (fileInfo) => {
+  const pendingFiles = fileStats.filter(
+    (fileInfo) => !isUnchangedFile(knownFiles.get(fileInfo.filePath), fileInfo),
+  );
+  const newFiles = pendingFiles.filter((fileInfo) => !knownFiles.has(fileInfo.filePath)).length;
+  const upgradeFiles = pendingFiles.filter((fileInfo) => {
     const cached = knownFiles.get(fileInfo.filePath);
-    if (isUnchangedFile(cached, fileInfo)) {
-      return;
-    }
-
-    const result = await scanChangedFile(index, fileInfo, cached);
+    return cached && Number(cached.scanner_version) !== SESSION_SCANNER_VERSION;
+  }).length;
+  const progress = {
+    phase: "scan",
+    files: fileStats.length,
+    pendingFiles: pendingFiles.length,
+    cacheFiles: fileStats.length - pendingFiles.length,
+    newFiles,
+    upgradeFiles,
+    modifiedFiles: pendingFiles.length - newFiles - upgradeFiles,
+  };
+  let readBytes = 0;
+  let lastProgressAt = 0;
+  function reportScanProgress(force = false) {
+    if (!onProgress) return;
+    const now = Date.now();
+    if (!force && now - lastProgressAt < 250) return;
+    lastProgressAt = now;
+    onProgress({
+      ...progress,
+      completedFiles: changedFiles,
+      scannedBytes: readBytes,
+      incrementalFiles,
+      fullRescanFiles,
+      done: force && changedFiles === pendingFiles.length,
+    });
+  }
+  reportScanProgress(true);
+  await mapLimit(pendingFiles, index.scanConcurrency, async (fileInfo) => {
+    const cached = knownFiles.get(fileInfo.filePath);
+    let fileReadBytes = 0;
+    const onFileProgress = onProgress
+      ? (bytes) => {
+          readBytes += bytes - fileReadBytes;
+          fileReadBytes = bytes;
+          reportScanProgress();
+        }
+      : null;
+    const result = await scanChangedFile(index, fileInfo, cached, onFileProgress);
     if (result.mode === "incremental") {
       appendScannedFile(index, fileInfo, cached, result);
       incrementalFiles += 1;
@@ -529,7 +571,9 @@ async function refreshIndex(index, sessionsDirs, key) {
     }
     scannedBytes += result.scanned.scannedBytes;
     changedFiles += 1;
+    reportScanProgress();
   });
+  if (pendingFiles.length > 0) reportScanProgress(true);
 
   if (changedFiles > 0 || deletedFiles > 0) {
     invalidateUsageCaches(index, { bumpGeneration: true });
@@ -577,7 +621,7 @@ function isUnchangedFile(cached, fileInfo) {
   );
 }
 
-async function scanChangedFile(index, fileInfo, cached) {
+async function scanChangedFile(index, fileInfo, cached, onProgress) {
   const savedState = parseScannerState(cached);
   if (await canScanIncrementally(fileInfo, cached, savedState)) {
     const seenTotals = new Set(
@@ -588,6 +632,7 @@ async function scanChangedFile(index, fileInfo, cached) {
       endOffset: fileInfo.size,
       state: savedState,
       seenTotals,
+      onProgress,
     });
     return {
       mode: "incremental",
@@ -596,7 +641,7 @@ async function scanChangedFile(index, fileInfo, cached) {
     };
   }
 
-  const scanned = await scanSessionFileRange(fileInfo.filePath, { endOffset: fileInfo.size });
+  const scanned = await scanSessionFileRange(fileInfo.filePath, { endOffset: fileInfo.size, onProgress });
   return {
     mode: "full",
     scanned,

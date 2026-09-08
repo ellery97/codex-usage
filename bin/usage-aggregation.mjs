@@ -158,6 +158,7 @@ function compareRows(a, b, options) {
 export async function buildUsagePayload(options) {
   if (options.useCache) return buildUsagePayloadFromCache(options);
 
+  options.onProgress?.({ phase: "discover" });
   const files = [];
   for (const sessionsDir of options.sessionsDirs) {
     files.push(...(await findJsonlFiles(sessionsDir)));
@@ -177,9 +178,27 @@ export async function buildUsagePayload(options) {
     excludedUnknownTimestampEvents: 0,
     excludedUnknownTimestampTokens: 0,
   };
-  const globalSeenTotals = new Set();
+  const canonicalEvents = new Map();
   const observedModels = new Set();
   const boundedRange = options.fromMs != null || options.toMs != null;
+  function includeEvent(event) {
+    if (event.timestampMs == null) {
+      const tokens = Number(event.usage?.total_tokens || 0);
+      scanStats.unknownTimestampEvents += 1;
+      scanStats.unknownTimestampTokens += tokens;
+      if (boundedRange) {
+        scanStats.excludedUnknownTimestampEvents += 1;
+        scanStats.excludedUnknownTimestampTokens += tokens;
+      }
+    }
+    if (inRange(event, options)) events.push(event);
+  }
+  let scannedBytes = 0;
+  let completedFiles = 0;
+  options.onProgress?.({
+    phase: "scan", files: files.length, pendingFiles: files.length,
+    completedFiles, scannedBytes, direct: true,
+  });
 
   for (const file of files) {
     const scanned = await scanSessionFile(file);
@@ -191,27 +210,32 @@ export async function buildUsagePayload(options) {
     for (const event of scanned.events) {
       if (event.model) observedModels.add(event.model);
       if (options.dedupeScope === "global") {
-        if (globalSeenTotals.has(event.totalUsageKey)) {
+        const existing = canonicalEvents.get(event.totalUsageKey);
+        if (existing) {
           scanStats.globalDuplicateTokenEvents += 1;
-          continue;
         }
-        globalSeenTotals.add(event.totalUsageKey);
-      }
-
-      if (event.timestampMs == null) {
-        const tokens = Number(event.usage?.total_tokens || 0);
-        scanStats.unknownTimestampEvents += 1;
-        scanStats.unknownTimestampTokens += tokens;
-        if (boundedRange) {
-          scanStats.excludedUnknownTimestampEvents += 1;
-          scanStats.excludedUnknownTimestampTokens += tokens;
+        // Copies can carry a later timestamp than the original. Pick the
+        // earliest known time before filtering; ties retain the first event
+        // in binary file-path order, then event order within that file.
+        if (!existing || (event.timestampMs ?? Infinity) < (existing.timestampMs ?? Infinity)) {
+          canonicalEvents.set(event.totalUsageKey, event);
         }
+      } else {
+        includeEvent(event);
       }
-      if (inRange(event, options)) events.push(event);
     }
+    scannedBytes += scanned.scannedBytes;
+    completedFiles += 1;
+    options.onProgress?.({
+      phase: "scan", files: files.length, pendingFiles: files.length,
+      completedFiles, scannedBytes, direct: true, done: completedFiles === files.length,
+    });
   }
 
+  for (const event of canonicalEvents.values()) includeEvent(event);
+
   await preparePricingForModels(observedModels, options);
+  options.onProgress?.({ phase: "aggregate" });
   const result = aggregateUsageEvents(events, options);
   return {
     source: options.sessionsDirs,
@@ -236,6 +260,7 @@ export async function buildUsagePayload(options) {
 }
 
 async function buildUsagePayloadFromCache(options) {
+  options.onProgress?.({ phase: "open" });
   const [indexModule, viewModule] = await Promise.all([
     import("./usage-index.mjs"),
     import("./usage-index-view.mjs"),
@@ -247,8 +272,14 @@ async function buildUsagePayloadFromCache(options) {
   });
   const startedAt = performance.now();
   try {
-    const syncStats = await indexModule.ensureFreshIndex(index, options.sessionsDirs);
-    await preparePricingForModels(indexModule.modelsInUsageIndex(index, options.sessionsDirs), options);
+    const syncStats = await indexModule.ensureFreshIndex(index, options.sessionsDirs, {
+      onProgress: options.onProgress,
+    });
+    const models = options.refreshPricing === true
+      ? indexModule.modelsInUsageIndex(index, options.sessionsDirs)
+      : [];
+    await preparePricingForModels(models, options);
+    options.onProgress?.({ phase: "aggregate" });
     const payload = viewModule.usagePayloadFromIndex(index, syncStats, options);
     payload.stats.cacheMode = true;
     payload.stats.totalDurationMs = Math.round(performance.now() - startedAt);
@@ -260,6 +291,7 @@ async function buildUsagePayloadFromCache(options) {
 
 async function preparePricingForModels(models, options) {
   if (typeof options.refreshPricing !== "boolean") return;
+  options.onProgress?.({ phase: "pricing", refresh: options.refreshPricing });
   await initializePricing({ dbPath: options.cacheDbPath });
   const result = await refreshPricing({
     models,
@@ -385,8 +417,10 @@ export async function runCli(argv, { parseArgs }) {
     console.log(helpText());
     return;
   }
+  options.onProgress = cliProgressReporter();
   options.onPricingWarning = (message) => console.error(`codex-token-usage: ${message}`);
   const payload = await buildUsagePayload(options);
+  options.onProgress({ phase: "complete" });
   if (options.json) {
     console.log(JSON.stringify(payload, null, 2));
   } else if (options.csv) {
@@ -394,4 +428,64 @@ export async function runCli(argv, { parseArgs }) {
   } else {
     console.log(textOutput(payload, options, payload.stats));
   }
+}
+
+function cliProgressReporter() {
+  const startedAt = performance.now();
+  let lastPhase = null;
+  let lastReportedAt = 0;
+  return (progress) => {
+    const now = performance.now();
+    const phaseChanged = progress.phase !== lastPhase;
+    if (!phaseChanged && !progress.done && now - lastReportedAt < 1_000) return;
+    let message;
+    switch (progress.phase) {
+      case "open":
+        message = "Opening usage index...";
+        break;
+      case "discover":
+        message = "Finding session logs...";
+        break;
+      case "check":
+        message = `Checking ${progress.files} files against the index...`;
+        break;
+      case "scan": {
+        const counts = `${progress.completedFiles}/${progress.pendingFiles} files; read ${formatProgressBytes(progress.scannedBytes)}`;
+        const plan = progress.direct
+          ? "Full scan"
+          : `Index scan (${progress.newFiles} new, ${progress.upgradeFiles} scanner upgrades, ${progress.modifiedFiles} modified; ${progress.cacheFiles} cached)`;
+        message = `${phaseChanged ? plan : "Scanning"}: ${counts}`;
+        if (progress.done && !progress.direct) {
+          message += `; ${progress.incrementalFiles} incremental, ${progress.fullRescanFiles} full scans`;
+        }
+        break;
+      }
+      case "pricing":
+        message = progress.refresh ? "Validating model prices..." : "Loading local model prices...";
+        break;
+      case "aggregate":
+        message = "Aggregating usage and reference costs...";
+        break;
+      case "complete":
+        message = `Done in ${((now - startedAt) / 1_000).toFixed(1)}s.`;
+        break;
+      default:
+        return;
+    }
+    console.error(`[codex-usage] ${message}`);
+    lastPhase = progress.phase;
+    lastReportedAt = now;
+  };
+}
+
+function formatProgressBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
 }

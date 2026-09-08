@@ -33,9 +33,9 @@
 `E:\mnt\c\...`。原生 Windows 会枚举已安装且可访问的 WSL 发行版及其 `/home/*` 用户目录；
 WSL/Linux 会检查可访问的 Windows 用户目录。
 
-工具只读取 `event_msg.token_count`、`event_msg.thread_settings_applied`、`turn_context` 和
-`session_meta` 相关记录，用于还原 token 用量、模型、工作目录和会话信息，不输出会话正文。
-启动时仅会访问固定的 OpenAI 官方模型文档地址校验公开价格，不会上传会话内容。
+工具读取 `event_msg.token_count`、任务开始/结束事件、`event_msg.thread_settings_applied`、`turn_context` 和
+`session_meta` 等记录，用于还原 token 用量、轮次、模型、工作目录和会话信息，不输出会话正文。
+Web 默认使用本地价格；CLI 默认联网校验价格，Web 也可显式启用。价格校验仅访问固定的 OpenAI 官方模型文档地址，不会上传会话内容。
 
 ## 功能
 
@@ -67,11 +67,24 @@ WSL/Linux 会检查可访问的 Windows 用户目录。
 npm run usage
 ```
 
+此命令默认复用与 Web 共用的 SQLite 增量索引。首次建立索引或升级扫描器时仍需读取历史日志；
+之后只读取变化的文件或新增字节。扫描进度、首次索引/版本升级/文件变化的数量，以及定价和聚合阶段
+输出到 stderr，不混入 JSON/CSV 结果。需要把 npm 输出重定向为 JSON 时，使用
+`npm run --silent usage -- --json > usage.json`，避免 npm 自身的启动提示进入结果。
+
+CLI 默认仍会联网校验价格。日常只使用本地价格、跳过联网等待时运行：
+
+```bash
+npm run usage -- --no-refresh-pricing
+```
+
 启动本地 Web 仪表盘：
 
 ```bash
 npm run web
 ```
+
+Web 默认使用本地价格，不联网校验，也不执行为校验价格准备的历史模型查询。
 
 也可以在启动时指定端口：
 
@@ -99,6 +112,8 @@ npm run smoke
 npm run update-pricing
 ```
 
+如果 Web 已经运行，更新价格后需要重启 Web 才会加载新价格。页面上的“刷新索引”只更新用量日志索引。
+
 ## macOS 使用
 
 本项目支持在 macOS 上直接运行。在项目根目录执行：
@@ -120,7 +135,7 @@ http://127.0.0.1:8787
 - 项目没有第三方 npm 依赖，正常情况下不需要执行 `npm install`。
 - macOS 默认读取 `~/.codex/sessions`。如果日志位于其他目录，可以使用
   `CODEX_HOME=/path/to/.codex npm run usage`，或通过 `--sessions` 显式指定目录。
-- 工具不需要 OpenAI API Key，也不会上传会话数据；启动时只下载固定的官方模型 Markdown 页面校验价格。
+- 工具不需要 OpenAI API Key，也不会上传会话数据。Web 默认使用本地价格；CLI 默认下载固定的官方模型 Markdown 页面校验价格。
 
 ## Web 仪表盘
 
@@ -142,8 +157,17 @@ npm run web
 .codex-usage/cache.sqlite
 ```
 
-Web 服务会在监听端口前同步一次默认数据源、读取日志中实际出现的模型、刷新价格目录，并预热
-常用去重范围和默认 Dashboard 查询。没有索引时会完整扫描历史 JSONL；之后每个文件会保存读取偏移、
+Web 服务会在监听端口前同步一次默认数据源、加载内置价格和已有的 `pricing-history.json`，并预热
+常用去重范围和默认 Dashboard 查询。默认不联网校验价格，也跳过为价格校验查询历史日志模型的步骤。
+需要在本次启动时联网校验，可显式运行：
+
+```bash
+CODEX_USAGE_PRICING_REFRESH=1 npm run web
+```
+
+也可使用 `npm run update-pricing` 手动更新本地价格目录，更新后重启已运行的 Web 服务。
+
+没有索引时会完整扫描历史 JSONL；之后每个文件会保存读取偏移、
 解析上下文、inode 和边界哈希。安全追加只读取新增字节；截断、替换、同尺寸改写、边界哈希或扫描器
 版本不匹配时才完整重扫该文件。不完整的末尾 JSON 行会留到下次追加后处理。
 
@@ -170,7 +194,13 @@ Web 服务没有认证，默认只监听 `127.0.0.1`。除非增加经过认证�
 
 ## CLI 用法
 
-直接运行：
+日常运行（默认启用缓存）：
+
+```bash
+npm run usage -- [options]
+```
+
+需要无状态完整重扫来排查索引差异时，直接运行原始 CLI：
 
 ```bash
 node ./bin/codex-token-usage.mjs [options]
@@ -180,34 +210,34 @@ node ./bin/codex-token-usage.mjs [options]
 
 ```bash
 # 按月统计全部时间，输出文本表格
-node ./bin/codex-token-usage.mjs
+npm run usage
 
 # 按天统计 2026-04-01 到 2026-04-30
-node ./bin/codex-token-usage.mjs --from 2026-04-01 --to 2026-04-30 --group day
+npm run usage -- --from 2026-04-01 --to 2026-04-30 --group day
 
 # 统计最近 7 天，输出 JSON
-node ./bin/codex-token-usage.mjs --last 7d --group day --json
+npm run --silent usage -- --last 7d --group day --json
 
 # 找出 token 消耗最高的 20 个工作目录
-node ./bin/codex-token-usage.mjs --group cwd --sort total --desc --limit 20
+npm run usage -- --group cwd --sort total --desc --limit 20
 
 # 按事件时点 Standard API 参考金额排序模型
-node ./bin/codex-token-usage.mjs --group model --sort cost --desc --limit 20
+npm run usage -- --group model --sort cost --desc --limit 20
 
 # 只统计 Windows 侧 Codex 当前会话
-node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions
+npm run usage -- --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions
 
 # 显式统计 Windows 侧当前会话和归档会话
-node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/archived_sessions
+npm run usage -- --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/archived_sessions
 
 # 显式合并多个会话目录
-node ./bin/codex-token-usage.mjs --sessions ~/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/archived_sessions
+npm run usage -- --sessions ~/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/sessions --sessions /mnt/c/Users/<Windows用户名>/.codex/archived_sessions
 
 # 输出 CSV，方便导入表格
-node ./bin/codex-token-usage.mjs --group month --csv > codex_usage.csv
+npm run --silent usage -- --group month --csv > codex_usage.csv
 
 # 查看每个 JSONL 文件自身记录的原始口径，关闭跨文件去重
-node ./bin/codex-token-usage.mjs --dedupe-scope file
+npm run usage -- --dedupe-scope file
 ```
 
 可用参数：
@@ -226,7 +256,7 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | `--limit N` | 限制输出行数；`0` 表示不限制 |
 | `--dedupe-scope VALUE` | 去重范围：`global` 或 `file`，默认 `global` |
 | `--timezone`, `--tz TZ` | 日期分组和 `--today` 使用的时区，默认本机时区 |
-| `--use-cache` | 使用与 Web 共用的 SQLite 增量索引；默认 CLI 仍为无状态完整扫描 |
+| `--use-cache` | 使用与 Web 共用的 SQLite 增量索引；`npm run usage` 默认添加，原始 CLI 默认完整扫描 |
 | `--cache-db PATH` | 指定 SQLite 索引路径，并隐含启用 `--use-cache` |
 | `--json` | 输出 JSON |
 | `--csv` | 输出 CSV |
@@ -241,11 +271,13 @@ Codex 会话文件里可能存在两类容易导致重复计数的情况：
 2. 较新的 rollout 文件中嵌入较早历史 rollout 的 token 事件。
 
 工具会先在单个文件内按累计 token 向量去重。默认 `--dedupe-scope global` 会进一步使用
-“事件时间戳 + 六字段累计 Token + 本次增量 Token”的事件指纹跨文件去重；当事件时间戳确实缺失时，
-指纹会额外包含会话/目录/模型回退身份，避免无关会话错误碰撞。
+“轮次 `turn_id` + 六字段累计 Token + 本次增量 Token”的事件指纹跨文件去重。子 Agent 日志可能复制父任务历史并
+改写外层时间戳，但保留原轮次 ID；这些副本只计一次，不同轮次即使用量相同也不会合并。没有可靠轮次 ID 的旧记录
+回退到事件时间戳；如果时间戳也缺失，再加入会话/目录/模型身份。
 
-Direct Scan 与 SQLite 使用同一套确定性 canonical 规则：按完整文件路径的二进制顺序，其次按文件内事件顺序
-选择代表事件。因此同一批数据无论 `--sessions` 参数的传入顺序如何，模型、cwd、session 和金额归属都保持一致。
+Direct Scan 与 SQLite 使用同一套确定性 canonical 规则：同一事件优先选择最早的已知时间戳，未知时间排在最后；
+时间相同则按完整文件路径的二进制顺序，其次按文件内事件顺序选择代表事件。选择发生在日期筛选前，避免副本的
+写入时间改变历史月份和价格版本。`--sessions` 参数顺序不会改变模型、cwd、session 和金额归属。
 
 如果你希望查看每个 JSONL 文件自己的原始记录口径，可以使用：
 
@@ -295,7 +327,10 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 
 金额来自版本化价格目录，口径是 OpenAI API Standard 文本 Token 价格。每条有时间戳的事件按自身 UTC 时间选择不晚于它的最新有效版本；恰好位于价格边界时使用新版本。真正没有时间戳的事件无法安全选择历史价格版本，因此会保留在 Token 统计中但标记为未计价。没有权威生效日的旧价格作为 `provisional` 历史基线，不会冒充正式变价日期。
 
-内置历史位于 `pricing/openai-pricing.snapshot.json`，运行时校验结果写入数据库旁的 `.codex-usage/pricing-history.json`。Web 在监听端口前刷新；CLI 在聚合和输出前刷新，`--help` 不联网。刷新最多并发 6 个请求且受 8 秒总超时限制，并复用 `ETag` / `Last-Modified`。部分页面失败时，成功模型仍会更新，失败模型继续使用最近一次已验证版本；完全离线时也会回退本地目录。
+内置历史位于 `pricing/openai-pricing.snapshot.json`，运行时校验结果写入数据库旁的 `.codex-usage/pricing-history.json`。
+Web 默认合并内置与已缓存的价格，不联网校验；设为 `CODEX_USAGE_PRICING_REFRESH=1` 后才在监听端口前联网校验。
+CLI 默认仍在聚合和输出前联网校验，可用 `CODEX_USAGE_PRICING_REFRESH=0` 或 `--no-refresh-pricing` 关闭；`--help` 不联网。
+联网刷新最多并发 6 个请求且受 8 秒总超时限制，并复用 `ETag` / `Last-Modified`。部分页面失败时，成功模型仍会更新，失败模型继续使用最近一次已验证版本；完全离线时也会回退本地目录。
 
 缓存更新使用锁文件、同目录临时文件和原子 rename。损坏的运行时缓存会先改名保留为 `.corrupt-<timestamp>`，再回退内置目录；内置目录自身无效时会明确拒绝启动。
 
@@ -320,6 +355,8 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 npm run update-pricing
 npm run update-pricing -- --check
 ```
+
+`--check` 只检查差异，不写入价格缓存。普通更新会写入本地价格目录；已运行的 Web 服务需要重启才能使用新价格。
 
 人工核验出明确生效日后，可将正式版本写入内置历史：
 
@@ -355,7 +392,7 @@ npm run update-pricing -- \
 | `CODEX_USAGE_DB` | `.codex-usage/cache.sqlite` | SQLite 索引文件路径 |
 | `CODEX_USAGE_PRICING_CACHE` | 数据库旁的 `pricing-history.json` | 运行时版本化价格目录 |
 | `CODEX_USAGE_PRICING_TIMEOUT_MS` | `8000` | 启动价格刷新总超时，单位毫秒 |
-| `CODEX_USAGE_PRICING_REFRESH` | 非 `0` | 设为 `0` 可关闭启动价格刷新 |
+| `CODEX_USAGE_PRICING_REFRESH` | Web：`0`；CLI：`1` | Web 设为 `1` 时才在启动时联网校验价格；CLI 设为 `0` 可关闭校验 |
 | `CODEX_USAGE_SCAN_CHECK_TTL_MS` | `1000` | 文件变更检查 TTL，单位毫秒 |
 | `CODEX_USAGE_SCAN_CONCURRENCY` | `8` | 重扫会话文件的并发数，范围会限制在 `1` 到 `32` |
 | `CODEX_USAGE_GC` | 非 `0` | 设为 `0` 可关闭 Web 服务中的显式 GC |
@@ -468,12 +505,14 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 首次启动且没有旧索引时需要完整扫描历史 JSONL。已有旧索引会原地迁移，但扫描器版本升级后的第一次
 索引刷新也必须逐文件完整重读日志，才能恢复旧索引没有保存的原始字段和正确去重键；例如历史日志约为
 23 GB 时，本次升级可能读取约 23 GB。已成功转换的文件会立即提交，中断后只重试仍为旧版本的文件。
+扫描器版本 5 会重建轮次身份，修正时间戳被改写的历史副本重复计费；此前异常偏高的金额可能因此明显下降。
 完成后，普通追加只读取新增字节；只有文件被改写、替换或恢复状态失效时才完整重扫该文件。
 
 ### 会不会把会话内容上传出去？
 
 不会。这个工具只在本机读取本地 JSONL 文件，Web 服务也只监听本地地址 `127.0.0.1`。
-启动时会向固定的 `developers.openai.com` 模型 Markdown 地址发送价格校验请求，但不会发送会话内容。
+Web 默认不联网校验价格。CLI 默认校验、显式启用的 Web 启动校验，以及手动价格更新只会向固定的
+`developers.openai.com` 模型 Markdown 地址请求价格，不会发送会话内容。
 
 ### 为什么同一时间范围下 `global` 和 `file` 统计结果不同？
 
@@ -483,7 +522,7 @@ JSONL 文件的原始记录。旧版 Codex 可能把历史 rollout 内容复制�
 
 ### 为什么 Web 和 CLI 的速度不同？
 
-CLI 默认每次直接扫描 JSONL，也可通过 `--use-cache` 复用索引。Web 的筛选请求使用
+`npm run usage` 默认复用增量索引；直接运行原始 CLI 默认完整扫描，也可通过 `--use-cache` 复用索引。Web 的筛选请求使用
 `refreshIndex=0`，只读取 SQLite、持久化全局去重结果、计价切片和最多 64 项查询结果缓存；只有
 “刷新索引”会访问日志文件，因此加载完成后的筛选不会再次走扫描流程。
 

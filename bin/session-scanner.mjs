@@ -10,7 +10,7 @@ import {
   usageZero,
 } from "./usage-values.mjs";
 
-export const SESSION_SCANNER_VERSION = 4;
+export const SESSION_SCANNER_VERSION = 5;
 const EVENT_KEY_SEPARATOR = "|";
 const UNKNOWN_CWD = "(unknown cwd)";
 const UNKNOWN_MODEL = "(unknown model)";
@@ -44,7 +44,7 @@ function initialSessionScanState(filePath) {
       model: "",
       createdAtMs: null,
     },
-    context: { cwd: "", model: "" },
+    context: { cwd: "", model: "", turnId: "" },
     knownContext: emptyContextFlags(),
     unresolvedContext: emptyContextFlags(),
     lastTotalUsage: usageZero(),
@@ -87,6 +87,7 @@ function normalizeSessionScanState(filePath, value) {
     context: {
       cwd: String(context.cwd || ""),
       model: String(context.model || ""),
+      turnId: normalizedText(context.turnId),
     },
     knownContext: Object.fromEntries(
       CONTEXT_FIELDS.map((field) => [field, Boolean(knownContext[field])]),
@@ -143,6 +144,7 @@ function normalizedText(value) {
 function refreshEventKey(record) {
   const { event } = record;
   const fingerprint = usageEventFingerprint({
+    turnId: record.turnId,
     timestampMs: record.hasEventTimestamp ? record.parsedTimestampMs : null,
     totalUsage: record.totalUsage,
     lastUsage: event.usage,
@@ -199,7 +201,10 @@ function processSessionLine(
     !line.includes('"token_count"') &&
     !line.includes('"turn_context"') &&
     !line.includes('"session_meta"') &&
-    !line.includes('"thread_settings_applied"')
+    !line.includes('"thread_settings_applied"') &&
+    !line.includes('"task_started"') &&
+    !line.includes('"task_complete"') &&
+    !line.includes('"turn_aborted"')
   ) {
     return true;
   }
@@ -248,6 +253,9 @@ function processSessionLine(
     state.context = {
       cwd: cwd || context.cwd || session.cwd,
       model: model || context.model || session.model,
+      // Missing IDs must not inherit a previous turn's identity. Older logs
+      // continue to use the timestamp-based fingerprint.
+      turnId: normalizedText(obj.payload.turn_id),
     };
     if (cwd) {
       session.cwd = cwd;
@@ -262,12 +270,26 @@ function processSessionLine(
     return true;
   }
 
+  if (obj.type === "event_msg" && obj.payload?.type === "task_started") {
+    state.context = { ...context, turnId: normalizedText(obj.payload.turn_id) };
+    return true;
+  }
+
+  if (
+    obj.type === "event_msg" &&
+    (obj.payload?.type === "task_complete" || obj.payload?.type === "turn_aborted")
+  ) {
+    state.context = { ...context, turnId: "" };
+    return true;
+  }
+
   if (obj.type === "event_msg" && obj.payload?.type === "thread_settings_applied") {
     const model = normalizedText(obj.payload.thread_settings?.model);
     if (model) {
       state.context = {
         cwd: context.cwd || session.cwd,
         model,
+        turnId: context.turnId,
       };
       session.model = model;
       state.knownContext.model = true;
@@ -313,6 +335,7 @@ function processSessionLine(
   };
   const record = {
     event,
+    turnId: context.turnId,
     totalUsage,
     totalKey,
     parsedTimestampMs,
@@ -332,7 +355,13 @@ function processSessionLine(
 
 export async function scanSessionFileRange(
   filePath,
-  { startOffset = 0, endOffset = null, state: savedState = null, seenTotals: savedTotals = null } = {},
+  {
+    startOffset = 0,
+    endOffset = null,
+    state: savedState = null,
+    seenTotals: savedTotals = null,
+    onProgress = null,
+  } = {},
 ) {
   const events = [];
   const seenTotals = new Set(Array.from(savedTotals || [], cumulativeKeyFromStoredEventKey));
@@ -382,6 +411,7 @@ export async function scanSessionFileRange(
         trailingParts.push(chunk.subarray(cursor));
       }
       chunkStart += chunk.length;
+      if (onProgress) onProgress(chunkStart - start);
     }
   }
 

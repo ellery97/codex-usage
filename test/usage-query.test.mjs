@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { parseArgs } from "../bin/codex-token-usage.mjs";
 import {
@@ -227,7 +228,61 @@ test("query result cache evicts the least recently used entry", async (t) => {
   assert.equal(evicted.stats.costCacheHit, true);
 });
 
-test("web startup indexes logs before refreshing newly observed models", async (t) => {
+test("web startup uses cached prices without network or model discovery by default", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-dashboard-cached-pricing-test-"));
+  const sessionsDir = path.join(directory, "sessions");
+  const cachePath = path.join(directory, "pricing-history.json");
+  const envKeys = ["CODEX_HOME", "CODEX_USAGE_SESSIONS", "CODEX_USAGE_PRICING_REFRESH", "CODEX_USAGE_PRICING_CACHE"];
+  const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+  let dashboard = null;
+  t.after(async () => {
+    closeUsageIndex(dashboard?.usageIndex);
+    for (const [key, value] of previousEnv) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+  process.env.CODEX_HOME = directory;
+  process.env.CODEX_USAGE_SESSIONS = sessionsDir;
+  process.env.CODEX_USAGE_PRICING_CACHE = cachePath;
+  await mkdir(sessionsDir, { recursive: true });
+  await writeFile(path.join(sessionsDir, "rollout.jsonl"), sessionText("cached", "cached-model", directory, usage(100, 10)));
+  await writeFile(cachePath, JSON.stringify({
+    schemaVersion: 2,
+    models: {
+      "cached-model": {
+        versions: [{ id: "cached-price", effectiveFrom: "2026-08-01T00:00:00Z", input: 2, output: 3 }],
+      },
+    },
+  }));
+
+  const fetchMock = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("Default Web startup must not request pricing pages");
+  });
+  const prepare = DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype, "prepare", function (sql, ...args) {
+    // This full-history query previously cost seconds even with network refresh disabled.
+    assert.doesNotMatch(sql, /SELECT\s+DISTINCT\s+model\s+FROM\s+events/i);
+    return prepare.call(this, sql, ...args);
+  });
+
+  for (const setting of [undefined, "0"]) {
+    if (setting == null) delete process.env.CODEX_USAGE_PRICING_REFRESH;
+    else process.env.CODEX_USAGE_PRICING_REFRESH = setting;
+    dashboard = await initializeDashboard({ dbPath: path.join(directory, "cache.sqlite"), enableGc: false });
+    const payload = await dashboard.queryService.query(options(sessionsDir), { refreshIndex: false });
+    assert.equal(payload.totals.requests, 1);
+    assert.equal(payload.totals.priced_requests, 1);
+    assert.equal(payload.totals.estimated_cost_usd, 0.00023);
+    assert.equal(payload.pricing.refreshStatus, "cached");
+    assert.equal(fetchMock.mock.callCount(), 0);
+    closeUsageIndex(dashboard.usageIndex);
+    dashboard = null;
+  }
+});
+
+test("opt-in web startup indexes logs before refreshing newly observed models", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-dashboard-startup-test-"));
   let dashboard = null;
   t.after(async () => {
@@ -236,10 +291,14 @@ test("web startup indexes logs before refreshing newly observed models", async (
   });
   const previousCodexHome = process.env.CODEX_HOME;
   const previousSessions = process.env.CODEX_USAGE_SESSIONS;
+  const previousPricingRefresh = process.env.CODEX_USAGE_PRICING_REFRESH;
+  process.env.CODEX_USAGE_PRICING_REFRESH = "1";
   process.env.CODEX_HOME = directory;
   t.after(() => {
     if (previousCodexHome == null) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;
+    if (previousPricingRefresh == null) delete process.env.CODEX_USAGE_PRICING_REFRESH;
+    else process.env.CODEX_USAGE_PRICING_REFRESH = previousPricingRefresh;
   });
 
   const sessionsDir = path.join(directory, "sessions");
@@ -258,7 +317,8 @@ test("web startup indexes logs before refreshing newly observed models", async (
     dbPath: path.join(directory, "cache.sqlite"),
     enableGc: false,
     initializePricingImpl: async () => {},
-    refreshPricingImpl: async ({ models }) => {
+    refreshPricingImpl: async ({ models, enabled }) => {
+      assert.equal(enabled, true);
       refreshedModels = models;
       return { warning: null, refreshStatus: "fresh" };
     },

@@ -6,8 +6,9 @@
 [中文版](README.md)
 
 A local CLI and web dashboard for analyzing Codex token usage and estimating API-equivalent costs.
-It reads Codex session logs on the local machine and never uploads session content. At startup it
-only contacts fixed official OpenAI model-documentation URLs to validate public prices.
+It reads Codex session logs on the local machine and never uploads session content. The Web dashboard
+uses local prices by default; the CLI validates prices online by default, and Web startup can opt in.
+Price validation only contacts fixed official OpenAI model-documentation URLs.
 
 ## Dashboard preview
 
@@ -70,11 +71,26 @@ Show CLI statistics:
 npm run usage
 ```
 
+This command reuses the Web dashboard's incremental SQLite index by default. The first run or a
+scanner upgrade still reads historical logs; subsequent runs read changed files or appended bytes.
+Scan progress, new/upgrade/modified file counts, pricing, and aggregation stages go to stderr, keeping
+JSON/CSV results clean. When redirecting npm output, use
+`npm run --silent usage -- --json > usage.json` to suppress npm's own startup banner.
+
+The CLI still validates prices online by default. To use local prices and skip the network wait, run:
+
+```bash
+npm run usage -- --no-refresh-pricing
+```
+
 Start the local web dashboard:
 
 ```bash
 npm run web
 ```
+
+The Web dashboard uses local prices by default, skipping both online validation and the historical-model
+query used to prepare it.
 
 You can also choose the port at startup:
 
@@ -103,6 +119,9 @@ Refresh the runtime pricing catalog manually:
 npm run update-pricing
 ```
 
+If the Web server is already running, restart it after updating prices to load the new catalog.
+The dashboard's **Refresh index** button only updates the usage-log index.
+
 ## Using on macOS
 
 This project runs directly on macOS. From the project root, run:
@@ -124,8 +143,8 @@ Notes:
 - No third-party npm dependencies are required, so `npm install` is normally unnecessary.
 - The default macOS source is `~/.codex/sessions`. If the logs are elsewhere, use
   `CODEX_HOME=/path/to/.codex npm run usage` or pass `--sessions` explicitly.
-- No OpenAI API key is required. Startup only downloads fixed official model Markdown pages for
-  price validation and never uploads session data.
+- No OpenAI API key is required, and session data is never uploaded. The Web dashboard uses local
+  prices by default; the CLI downloads fixed official model Markdown pages for price validation by default.
 
 ## Web dashboard
 
@@ -135,8 +154,18 @@ The equivalent direct command is:
 node --no-warnings --expose-gc ./bin/codex-usage-server.mjs
 ```
 
-The server synchronizes the default source before listening, discovers models from the updated
-index, refreshes pricing, and prewarms common canonical scopes plus the default dashboard query.
+The server synchronizes the default source before listening, loads built-in prices and any existing
+`pricing-history.json`, and prewarms common canonical scopes plus the default dashboard query.
+By default it skips both online price validation and the historical-model query used for that validation.
+To enable online validation for a particular startup, run:
+
+```bash
+CODEX_USAGE_PRICING_REFRESH=1 npm run web
+```
+
+You can also run `npm run update-pricing` to update the local price catalog manually, then restart
+any running Web server to load it.
+
 The index lives at `.codex-usage/cache.sqlite` by default. A new index scans historical JSONL files;
 later safe appends resume from a saved byte offset and parser context. Truncation, replacement,
 same-size rewrites, inode or boundary-hash changes, and scanner-version changes trigger a full
@@ -171,7 +200,13 @@ The server has no authentication and listens on `127.0.0.1` by default. Do not b
 
 ## CLI usage
 
-Run:
+For everyday use with caching enabled:
+
+```bash
+npm run usage -- [options]
+```
+
+For a stateless full scan when investigating index differences, run the original CLI directly:
 
 ```bash
 node ./bin/codex-token-usage.mjs [options]
@@ -181,34 +216,34 @@ Examples:
 
 ```bash
 # Group all-time usage by month
-node ./bin/codex-token-usage.mjs
+npm run usage
 
 # Group a date range by day
-node ./bin/codex-token-usage.mjs --from 2026-04-01 --to 2026-04-30 --group day
+npm run usage -- --from 2026-04-01 --to 2026-04-30 --group day
 
 # Show the last seven days as JSON
-node ./bin/codex-token-usage.mjs --last 7d --group day --json
+npm run --silent usage -- --last 7d --group day --json
 
 # Find the 20 highest-token working directories
-node ./bin/codex-token-usage.mjs --group cwd --sort total --desc --limit 20
+npm run usage -- --group cwd --sort total --desc --limit 20
 
 # Sort models by event-time Standard API reference cost
-node ./bin/codex-token-usage.mjs --group model --sort cost --desc --limit 20
+npm run usage -- --group model --sort cost --desc --limit 20
 
 # Count only the Windows current-session directory
-node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions
+npm run usage -- --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions
 
 # Count Windows current and archived sessions explicitly
-node ./bin/codex-token-usage.mjs --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/archived_sessions
+npm run usage -- --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/archived_sessions
 
 # Combine local and Windows sources explicitly
-node ./bin/codex-token-usage.mjs --sessions ~/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/archived_sessions
+npm run usage -- --sessions ~/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/sessions --sessions /mnt/c/Users/<WindowsUsername>/.codex/archived_sessions
 
 # Export CSV
-node ./bin/codex-token-usage.mjs --group month --csv > codex_usage.csv
+npm run --silent usage -- --group month --csv > codex_usage.csv
 
 # Inspect per-file records without cross-file deduplication
-node ./bin/codex-token-usage.mjs --dedupe-scope file
+npm run usage -- --dedupe-scope file
 ```
 
 Available options:
@@ -227,7 +262,7 @@ Available options:
 | `--limit N` | Maximum number of rows; `0` means unlimited |
 | `--dedupe-scope VALUE` | `global` or `file`; defaults to `global` |
 | `--timezone`, `--tz TZ` | Timezone for date grouping and `--today` |
-| `--use-cache` | Reuse the Web dashboard's incremental SQLite index |
+| `--use-cache` | Reuse the Web dashboard's incremental SQLite index; included by `npm run usage`, while the direct CLI defaults to a full scan |
 | `--cache-db PATH` | Select the SQLite index path and imply `--use-cache` |
 | `--json` | Output JSON |
 | `--csv` | Output CSV |
@@ -239,13 +274,16 @@ Available options:
 Codex session files can contain duplicate cumulative `token_count` records in one file, and newer
 rollout files can embed historical events. The tool first deduplicates cumulative-token vectors
 within each file. The default `global` scope then deduplicates across files with an event fingerprint
-built from the event timestamp, six-field cumulative usage, and request delta. When the event
-timestamp is truly missing, the fingerprint also includes fallback session/cwd/model identity to
-avoid unrelated-session collisions.
+built from the turn ID, six-field cumulative usage, and request delta. Subagent rollouts can copy
+parent history while rewriting event timestamps but retaining the original turn IDs. Those copies
+are counted once, while independent turns with identical usage remain distinct. Legacy records
+without a reliable turn ID fall back to the event timestamp, and additionally use session/cwd/model
+identity if the timestamp is also missing.
 
-Direct Scan and SQLite use the same deterministic canonical representative rule: complete file path
-in binary order, then event order within the file. Reversing the order of repeated `--sessions`
-arguments therefore cannot change model, cwd, session, or cost attribution.
+Direct Scan and SQLite choose the earliest known timestamp for each event, placing unknown times
+last. Ties use the complete file path in binary order, then event order within the file. Selection
+happens before date filtering so a copy's write time cannot move historical usage into a later month
+or price version. Reversing `--sessions` arguments cannot change model, cwd, session, or cost attribution.
 
 Use `--dedupe-scope file` when inspecting the raw records of one JSONL file. Use the default
 `global` scope for long-term real-usage totals. Canonical selection happens before time filtering.
@@ -295,8 +333,10 @@ a historical price version, so it remains in token totals but is marked unpriced
 without an authoritative effective date remain visible as `provisional` historical baselines.
 
 Built-in history lives at `pricing/openai-pricing.snapshot.json`. Runtime validation is stored as
-`.codex-usage/pricing-history.json` beside the SQLite database. The web server refreshes before
-listening, while the CLI refreshes before aggregation and output; `--help` stays offline. Refreshes
+`.codex-usage/pricing-history.json` beside the SQLite database. Web startup merges built-in and cached
+prices without online validation by default. Set `CODEX_USAGE_PRICING_REFRESH=1` to validate prices
+online before listening. The CLI still validates online before aggregation and output by default;
+use `CODEX_USAGE_PRICING_REFRESH=0` or `--no-refresh-pricing` to disable it. `--help` stays offline. Refreshes
 use at most six concurrent requests, an eight-second overall timeout, and conditional
 `ETag`/`Last-Modified` requests. Successful models are still updated when only some pages fail;
 failed models keep their most recently validated versions. A fully offline refresh falls back to the
@@ -333,6 +373,9 @@ Refresh the runtime catalog or inspect changes without writing:
 npm run update-pricing
 npm run update-pricing -- --check
 ```
+
+`--check` reports differences without writing the pricing cache. A normal update writes the local
+price catalog; restart any running Web server to use the updated prices.
 
 After verifying an authoritative effective date, seed a formal built-in version:
 
@@ -371,7 +414,7 @@ the actual URL is printed to the console. Port values must be integers from `0` 
 | `CODEX_USAGE_DB` | `.codex-usage/cache.sqlite` | SQLite index path |
 | `CODEX_USAGE_PRICING_CACHE` | `pricing-history.json` beside the database | Runtime versioned pricing catalog |
 | `CODEX_USAGE_PRICING_TIMEOUT_MS` | `8000` | Overall startup pricing-refresh timeout in milliseconds |
-| `CODEX_USAGE_PRICING_REFRESH` | non-`0` | Set to `0` to disable startup pricing refresh |
+| `CODEX_USAGE_PRICING_REFRESH` | Web: `0`; CLI: `1` | Set to `1` to enable online validation at Web startup, or `0` to disable it for the CLI |
 | `CODEX_USAGE_SCAN_CHECK_TTL_MS` | `1000` | File-change check TTL in milliseconds |
 | `CODEX_USAGE_SCAN_CONCURRENCY` | `8` | Rescan concurrency, clamped to 1–32 |
 | `CODEX_USAGE_GC` | non-`0` | Set to `0` to disable explicit GC |
@@ -493,13 +536,16 @@ refresh after a scanner-version upgrade must fully reread each log to recover fi
 index did not save, including cache-write values, event fingerprints, cumulative-token key suffixes,
 and resumable parser state. A 23 GB history can therefore require about 23 GB of reads during that
 upgrade. Successfully converted files commit independently, so an interrupted migration retries
-only files still on the old version. After migration, safe appends read only new bytes; rewritten
-files or invalid parser state fall back to a full rescan.
+only files still on the old version. Scanner version 5 rebuilds turn identities to stop charging
+copied history again when its timestamps have been rewritten; previously inflated totals can drop
+substantially. After migration, safe appends read only new bytes; rewritten files or invalid parser
+state fall back to a full rescan.
 
 ### Does the tool upload session content?
 
-No. It reads local JSONL files only and serves the dashboard on `127.0.0.1`. Startup sends price
-validation requests to fixed `developers.openai.com` model Markdown URLs, but no session content.
+No. It reads local JSONL files only and serves the dashboard on `127.0.0.1`. Web startup skips online
+price validation by default. Default CLI validation, explicitly enabled Web startup validation, and
+manual price updates request fixed `developers.openai.com` model Markdown URLs without sending session content.
 
 ### Why do global and file deduplication differ?
 
@@ -508,7 +554,8 @@ deduplicates only inside each JSONL file and is useful for inspecting raw file r
 
 ### Why is the web dashboard faster after the first run?
 
-The CLI scans JSONL by default and can reuse the index with `--use-cache`. Web filters send
+`npm run usage` reuses the incremental index by default. The direct CLI scans JSONL by default and
+can reuse the index with `--use-cache`. Web filters send
 `refreshIndex=0` and reuse SQLite, persisted canonical events, one costed slice, and up to 64 query
 results. Only **Refresh index** checks session files.
 

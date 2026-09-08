@@ -3,6 +3,9 @@ import path from "node:path";
 import { sqlPathFilter } from "./path-utils.mjs";
 
 const MAX_CACHED_SCOPES = 8;
+const CANONICAL_RULE_VERSION = 2;
+const CANONICAL_EVENT_ORDER =
+  "e.timestamp_ms IS NULL, e.timestamp_ms, e.file_path COLLATE BINARY, e.event_index";
 
 export const CANONICAL_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS dedupe_scopes (
@@ -46,7 +49,11 @@ function canonicalRoots(sessionsDirs) {
 }
 
 function canonicalScopeId(roots) {
-  return createHash("sha256").update(JSON.stringify(roots)).digest("hex");
+  // Changing representative selection must invalidate existing scopes even
+  // when file rows are unchanged or a tracked append is pending.
+  return createHash("sha256")
+    .update(JSON.stringify({ version: CANONICAL_RULE_VERSION, roots }))
+    .digest("hex");
 }
 
 export function markCanonicalChange(db, filePath, totalUsageKeys) {
@@ -152,7 +159,7 @@ function rebuildScope(db, scopeId, roots, rootsJson, fingerprint) {
              e.total_usage_key,
              ROW_NUMBER() OVER (
                PARTITION BY e.total_usage_key
-               ORDER BY e.file_path, e.event_index
+               ORDER BY ${CANONICAL_EVENT_ORDER}
              ) AS rn
            FROM events e
            WHERE ${filter.sql}
@@ -188,7 +195,7 @@ function repairScope(db, scopeId, roots, fingerprint, dirtyKeys) {
            e.total_usage_key,
            ROW_NUMBER() OVER (
              PARTITION BY e.total_usage_key
-             ORDER BY e.file_path, e.event_index
+             ORDER BY ${CANONICAL_EVENT_ORDER}
            ) AS rn
          FROM events e
          INNER JOIN canonical_dirty_keys dirty
