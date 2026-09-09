@@ -29,7 +29,7 @@ const ROOT = path.resolve(__dirname, "..");
 export const DEFAULT_DB_PATH = path.join(ROOT, ".codex-usage", "cache.sqlite");
 export const DEFAULT_SCAN_CHECK_TTL_MS = 1000;
 export const DEFAULT_SCAN_CONCURRENCY = 8;
-const USAGE_INDEX_SCHEMA_VERSION = 3;
+const USAGE_INDEX_SCHEMA_VERSION = 4;
 const BOUNDARY_HASH_BYTES = 64 * 1024;
 
 const COST_AGGREGATE_COLUMNS = `
@@ -84,6 +84,7 @@ export async function openUsageIndex({
         file_path TEXT NOT NULL,
         event_index INTEGER NOT NULL,
         timestamp_ms INTEGER,
+        has_event_timestamp INTEGER NOT NULL DEFAULT 0,
         session_created_at_ms INTEGER,
         session_id TEXT NOT NULL,
         total_usage_key TEXT NOT NULL,
@@ -99,7 +100,6 @@ export async function openUsageIndex({
 
       CREATE INDEX IF NOT EXISTS idx_events_file ON events(file_path);
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp_ms);
-      CREATE INDEX IF NOT EXISTS idx_events_total_order ON events(total_usage_key, file_path, event_index);
       CREATE INDEX IF NOT EXISTS idx_events_model ON events(model);
       CREATE INDEX IF NOT EXISTS idx_events_cwd ON events(cwd);
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
@@ -193,9 +193,9 @@ export async function openUsageIndex({
       `),
       insertEvent: db.prepare(`
         INSERT INTO events (
-          file_path, event_index, timestamp_ms, session_created_at_ms, session_id, total_usage_key, cwd, model,
+          file_path, event_index, timestamp_ms, has_event_timestamp, session_created_at_ms, session_id, total_usage_key, cwd, model,
           input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
     },
   };
@@ -226,7 +226,7 @@ export function modelsInUsageIndex(index, sessionsDirs = null) {
     .map((row) => String(row.model));
 }
 
-export async function ensureFreshIndex(index, sessionsDirs, { force = false } = {}) {
+export async function ensureFreshIndex(index, sessionsDirs, { force = false, onProgress = null } = {}) {
   const now = Date.now();
   const key = sessionsKey(sessionsDirs);
   if (!force && index.lastSync?.sessionsKey === key && now - index.checkedAt < index.scanCheckTtlMs) {
@@ -247,7 +247,7 @@ export async function ensureFreshIndex(index, sessionsDirs, { force = false } = 
   }
 
   index.refreshKey = key;
-  index.refreshPromise = refreshIndex(index, sessionsDirs, key).finally(() => {
+  index.refreshPromise = refreshIndex(index, sessionsDirs, key, onProgress).finally(() => {
     index.refreshPromise = null;
     index.refreshKey = null;
   });
@@ -483,9 +483,11 @@ function tempCostTableExists(index) {
   );
 }
 
-async function refreshIndex(index, sessionsDirs, key) {
+async function refreshIndex(index, sessionsDirs, key, onProgress) {
   const startedAt = Date.now();
+  onProgress?.({ phase: "discover" });
   const filePaths = await collectJsonlFiles(sessionsDirs);
+  onProgress?.({ phase: "check", files: filePaths.length });
   const currentPaths = new Set(filePaths);
   const knownFiles = new Map(index.statements.allFiles.all().map((row) => [row.path, row]));
 
@@ -513,13 +515,51 @@ async function refreshIndex(index, sessionsDirs, key) {
   let incrementalFiles = 0;
   let fullRescanFiles = 0;
   let scannedBytes = 0;
-  await mapLimit(fileStats, index.scanConcurrency, async (fileInfo) => {
+  const pendingFiles = fileStats.filter(
+    (fileInfo) => !isUnchangedFile(knownFiles.get(fileInfo.filePath), fileInfo),
+  );
+  const newFiles = pendingFiles.filter((fileInfo) => !knownFiles.has(fileInfo.filePath)).length;
+  const upgradeFiles = pendingFiles.filter((fileInfo) => {
     const cached = knownFiles.get(fileInfo.filePath);
-    if (isUnchangedFile(cached, fileInfo)) {
-      return;
-    }
-
-    const result = await scanChangedFile(index, fileInfo, cached);
+    return cached && Number(cached.scanner_version) !== SESSION_SCANNER_VERSION;
+  }).length;
+  const progress = {
+    phase: "scan",
+    files: fileStats.length,
+    pendingFiles: pendingFiles.length,
+    cacheFiles: fileStats.length - pendingFiles.length,
+    newFiles,
+    upgradeFiles,
+    modifiedFiles: pendingFiles.length - newFiles - upgradeFiles,
+  };
+  let readBytes = 0;
+  let lastProgressAt = 0;
+  function reportScanProgress(force = false) {
+    if (!onProgress) return;
+    const now = Date.now();
+    if (!force && now - lastProgressAt < 250) return;
+    lastProgressAt = now;
+    onProgress({
+      ...progress,
+      completedFiles: changedFiles,
+      scannedBytes: readBytes,
+      incrementalFiles,
+      fullRescanFiles,
+      done: force && changedFiles === pendingFiles.length,
+    });
+  }
+  reportScanProgress(true);
+  await mapLimit(pendingFiles, index.scanConcurrency, async (fileInfo) => {
+    const cached = knownFiles.get(fileInfo.filePath);
+    let fileReadBytes = 0;
+    const onFileProgress = onProgress
+      ? (bytes) => {
+          readBytes += bytes - fileReadBytes;
+          fileReadBytes = bytes;
+          reportScanProgress();
+        }
+      : null;
+    const result = await scanChangedFile(index, fileInfo, cached, onFileProgress);
     if (result.mode === "incremental") {
       appendScannedFile(index, fileInfo, cached, result);
       incrementalFiles += 1;
@@ -529,7 +569,9 @@ async function refreshIndex(index, sessionsDirs, key) {
     }
     scannedBytes += result.scanned.scannedBytes;
     changedFiles += 1;
+    reportScanProgress();
   });
+  if (pendingFiles.length > 0) reportScanProgress(true);
 
   if (changedFiles > 0 || deletedFiles > 0) {
     invalidateUsageCaches(index, { bumpGeneration: true });
@@ -577,7 +619,7 @@ function isUnchangedFile(cached, fileInfo) {
   );
 }
 
-async function scanChangedFile(index, fileInfo, cached) {
+async function scanChangedFile(index, fileInfo, cached, onProgress) {
   const savedState = parseScannerState(cached);
   if (await canScanIncrementally(fileInfo, cached, savedState)) {
     const seenTotals = new Set(
@@ -588,6 +630,7 @@ async function scanChangedFile(index, fileInfo, cached) {
       endOffset: fileInfo.size,
       state: savedState,
       seenTotals,
+      onProgress,
     });
     return {
       mode: "incremental",
@@ -596,7 +639,7 @@ async function scanChangedFile(index, fileInfo, cached) {
     };
   }
 
-  const scanned = await scanSessionFileRange(fileInfo.filePath, { endOffset: fileInfo.size });
+  const scanned = await scanSessionFileRange(fileInfo.filePath, { endOffset: fileInfo.size, onProgress });
   return {
     mode: "full",
     scanned,
@@ -737,6 +780,7 @@ function insertEvents(index, filePath, events, startIndex) {
       filePath,
       startIndex + relativeIndex,
       event.timestampMs ?? null,
+      event.hasEventTimestamp ? 1 : 0,
       event.sessionCreatedAtMs ?? null,
       event.sessionId || "",
       event.totalUsageKey || "",
@@ -935,6 +979,11 @@ function migrateUsageIndexSchema(db) {
     if (!eventColumns.has("cache_write_input_tokens")) {
       db.exec("ALTER TABLE events ADD COLUMN cache_write_input_tokens INTEGER NOT NULL DEFAULT 0");
     }
+    if (!eventColumns.has("has_event_timestamp")) {
+      // A stored timestamp alone cannot distinguish an event time from a
+      // session fallback. Scanner version 6 recovers the source from JSONL.
+      db.exec("ALTER TABLE events ADD COLUMN has_event_timestamp INTEGER NOT NULL DEFAULT 0");
+    }
     addColumn(db, fileColumns, "scan_offset", "INTEGER NOT NULL DEFAULT 0");
     addColumn(db, fileColumns, "parser_state_json", "TEXT");
     addColumn(db, fileColumns, "scanner_version", "INTEGER NOT NULL DEFAULT 0");
@@ -942,6 +991,12 @@ function migrateUsageIndexSchema(db) {
     addColumn(db, fileColumns, "file_ino", "TEXT");
     addColumn(db, fileColumns, "boundary_hash", "TEXT");
     db.exec(CANONICAL_SCHEMA_SQL);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_events_canonical_source_time_order
+        ON events(total_usage_key, has_event_timestamp DESC, timestamp_ms IS NULL, timestamp_ms, file_path COLLATE BINARY, event_index);
+      DROP INDEX IF EXISTS idx_events_canonical_time_order;
+      DROP INDEX IF EXISTS idx_events_total_order;
+    `);
     db.exec(`PRAGMA user_version = ${USAGE_INDEX_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {

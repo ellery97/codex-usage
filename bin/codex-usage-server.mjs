@@ -289,6 +289,7 @@ export async function initializeDashboard({
   scanCheckTtlMs = SCAN_CHECK_TTL_MS,
   scanConcurrency = SCAN_CONCURRENCY,
   enableGc = ENABLE_GC,
+  refreshPricingEnabled = process.env.CODEX_USAGE_PRICING_REFRESH === "1",
   initializePricingImpl = initializePricing,
   refreshPricingImpl = refreshPricing,
 } = {}) {
@@ -306,7 +307,8 @@ export async function initializeDashboard({
     await initializePricingImpl({ dbPath });
     const pricingRefresh = await refreshPricingImpl({
       dbPath,
-      models: modelsInUsageIndex(usageIndex, allOptions.sessionsDirs),
+      enabled: refreshPricingEnabled,
+      models: refreshPricingEnabled ? modelsInUsageIndex(usageIndex, allOptions.sessionsDirs) : [],
     });
     if (pricingRefresh.warning) {
       console.warn(`Pricing: ${pricingRefresh.warning}`);

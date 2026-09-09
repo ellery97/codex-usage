@@ -52,18 +52,25 @@ export function usageKey(usage) {
 }
 
 export function usageEventFingerprint({
+  turnId = null,
   timestampMs,
   totalUsage,
   lastUsage = null,
   fallbackIdentity = null,
 } = {}) {
+  const stableTurnId = typeof turnId === "string" ? turnId.trim() : "";
   const validTimestamp = timestampMs != null && Number.isFinite(Number(timestampMs));
   const identity = {
-    timestamp_ms: validTimestamp ? Number(timestampMs) : null,
+    // Forked rollouts can rewrite every event timestamp while preserving turn
+    // IDs. A turn identifies copied history without merging unrelated requests
+    // that happen to report the same token counts.
+    ...(stableTurnId
+      ? { turn_id: stableTurnId }
+      : { timestamp_ms: validTimestamp ? Number(timestampMs) : null }),
     total_usage: usageKey(totalUsage),
     last_usage: lastUsage ? usageKey(lastUsage) : null,
   };
-  if (!validTimestamp) {
+  if (!stableTurnId && !validTimestamp) {
     identity.fallback_identity = String(fallbackIdentity || "unknown");
   }
   return createHash("sha256").update(JSON.stringify(identity)).digest("hex");

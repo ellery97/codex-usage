@@ -35,7 +35,6 @@ test("scanner backfills a model that is applied after the first token events", a
   await writeFile(file, `${lines.map(JSON.stringify).join("\n")}\n`);
 
   const scanned = await scanSessionFile(file);
-  assert.equal(SESSION_SCANNER_VERSION, 4);
   assert.equal(scanned.events.length, 3);
   assert.deepEqual(
     scanned.events.map((event) => event.model),
@@ -100,7 +99,10 @@ test("index fully rescans when late model context crosses an incremental boundar
   const firstSync = await ensureFreshIndex(index, [sessionsDir]);
   const firstPayload = usagePayloadFromIndex(index, firstSync, options);
   assert.equal(firstPayload.rows[0].key, "(unknown model)");
-  assert.equal(index.db.prepare("SELECT scanner_version FROM files").get().scanner_version, 4);
+  assert.equal(
+    index.db.prepare("SELECT scanner_version FROM files").get().scanner_version,
+    SESSION_SCANNER_VERSION,
+  );
   assert.equal(
     JSON.parse(index.db.prepare("SELECT parser_state_json FROM files").get().parser_state_json)
       .incrementalSafe,
