@@ -3,9 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pricingCatalogSnapshot } from "../bin/openai-pricing.mjs";
 import {
   mergePricingCatalogs,
   normalizePricingCatalog,
+  PricingCatalog,
   selectVersion,
 } from "../bin/pricing-catalog.mjs";
 import {
@@ -129,13 +131,45 @@ test("ignores pricing modifiers outside the Text tokens subsection", () => {
     `### Other pricing notes
 
 Cache writes are billed at 1.25x the uncached input token rate.
-Prompts with >272K input tokens are priced at 2x input and 1.5x output.
+Prompts with more than 272K input tokens are priced at 2x input and 1.5x output.
 
 ### Quick comparison`,
   );
   const parsed = parseModelPricingMarkdown(page, "gpt-section-scope");
   assert.equal(parsed.cacheWrite, undefined);
   assert.equal(parsed.longContext, undefined);
+});
+
+test("recognizes supported long-context threshold wording and units", () => {
+  for (const threshold of [">272K", "above 272,000", "over 0.272M", "more than 272K"]) {
+    const page = modelPage("gpt-threshold", { longContext: true }).replace(">272K", threshold);
+    const parsed = parseModelPricingMarkdown(page, "gpt-threshold");
+    assert.equal(parsed.longContextThresholdTokens, 272_000, threshold);
+    assert.deepEqual(parsed.longContext, { input: 10, cachedInput: 1, output: 45 }, threshold);
+  }
+});
+
+test("parses GPT-6 Standard rates without mixing in other service tiers", () => {
+  const cases = [
+    ["gpt-6-sol", 2, 0.2, 10, 2.5, { input: 4, cachedInput: 0.4, cacheWrite: 5, output: 15 }],
+    ["gpt-6-luna", 0.1, 0.01, 0.5, 0.125, { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 0.75 }],
+    ["gpt-6.1-sol", 2, 0.1, 10, 2.5, { input: 4, cachedInput: 0.2, cacheWrite: 5, output: 15 }],
+  ];
+  for (const [model, input, cachedInput, output, cacheWrite, longContext] of cases) {
+    const page = modelPage(model, { input, cachedInput, output, cacheWrite: true, longContext: true })
+      .replace(">272K", "more than 272K")
+      .replace("2x input and", "2x input and cache rates and")
+      .replace("### Quick comparison", `Fast mode prices are 2x Standard. Batch and Flex prices are 50% lower than Standard.
+Ultrafast mode prices are 6x Standard.
+Regional processing adds a 10% premium where available.
+
+### Quick comparison`);
+    const parsed = parseModelPricingMarkdown(page, model);
+    assert.equal(parsed.serviceTier, "standard");
+    assert.deepEqual([parsed.input, parsed.cachedInput, parsed.cacheWrite, parsed.output], [input, cachedInput, cacheWrite, output]);
+    assert.equal(parsed.longContextThresholdTokens, 272_000);
+    assert.deepEqual(parsed.longContext, longContext, model);
+  }
 });
 
 test("supports Pro pages without a cached-input discount", () => {
@@ -425,4 +459,73 @@ test("a newer built-in formal version supersedes the matching runtime observatio
     (version) => version.id === "gpt-test-observed",
   );
   assert.equal(observed.supersededBy, "gpt-test-2026-08-10");
+});
+
+function missingLongContextCache() {
+  const model = "gpt-6.1-sol";
+  const seed = pricingCatalogSnapshot();
+  const formal = seed.models[model].versions[0];
+  const observed = {
+    ...formal,
+    id: `${model}-observed-incomplete`,
+    effectiveFrom: "2026-10-01T00:00:00.000Z",
+    observedAt: "2026-10-01T00:00:00.000Z",
+    provisional: true,
+    sourceUrl: `https://developers.openai.com/api/docs/models/${model}.md`,
+    evidenceLevel: "official-model-page-first-observed",
+  };
+  delete observed.longContext;
+  delete observed.longContextThresholdTokens;
+  const runtime = oneModelCatalog(model);
+  runtime.models[model].versions = [observed];
+  return { seed, runtime, model, formal, observed };
+}
+
+test("formal prices repair a proven long-context parser omission across cache round trips", async (t) => {
+  const { seed, runtime, model, formal, observed } = missingLongContextCache();
+  const merged = mergePricingCatalogs(seed, runtime);
+  assert.deepEqual(
+    merged.models[model].versions.find((version) => version.id === observed.id),
+    { ...observed, supersededBy: formal.id },
+  );
+  assert.equal(runtime.models[model].versions[0].supersededBy, undefined);
+
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-pricing-parser-repair-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cachePath = path.join(directory, "pricing-history.json");
+  await writeRuntimePricingCache(cachePath, runtime);
+  await writeRuntimePricingCache(cachePath, merged);
+  const loaded = await readRuntimePricingCache(cachePath);
+  const catalog = new PricingCatalog(mergePricingCatalogs(seed, loaded.snapshot));
+  const cost = catalog.estimateUsageCost(model, {
+    input_tokens: 300_000,
+    cached_input_tokens: 100_000,
+    cache_write_input_tokens: 50_000,
+    output_tokens: 100_000,
+  }, Date.parse("2026-10-02T00:00:00Z"));
+  assert.equal(cost.versionId, formal.id);
+  assert.equal(cost.costUsd, 2.37);
+  assert.equal(catalog.snapshot.models[model].versions.length, 2);
+});
+
+test("does not infer cache corrections without matching evidence and rates", () => {
+  const { formal } = missingLongContextCache();
+  const cases = [
+    ["different content", { contentHash: "different-official-page" }],
+    ["different price", { cachedInput: 0.2 }],
+    ["already formal", { provisional: false }],
+    ["before formal effective date", { effectiveFrom: "2026-09-28T00:00:00.000Z" }],
+    ["partial threshold", { longContextThresholdTokens: 272_000 }],
+    ["different long-context prices", { longContextThresholdTokens: 272_000, longContext: { ...formal.longContext, output: 16 } }],
+  ];
+  for (const [label, overrides] of cases) {
+    const { seed, runtime, model, observed } = missingLongContextCache();
+    Object.assign(observed, overrides);
+    const merged = mergePricingCatalogs(seed, runtime);
+    assert.equal(
+      merged.models[model].versions.find((version) => version.id === observed.id).supersededBy,
+      undefined,
+      label,
+    );
+  }
 });

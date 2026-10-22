@@ -13,6 +13,60 @@ import {
 const JULY_9 = Date.parse("2026-07-09T00:00:00.000Z");
 const JULY_30 = Date.parse("2026-07-30T00:00:00.000Z");
 const SEPTEMBER_3 = Date.parse("2026-09-03T00:00:00.000Z");
+const GPT6_PRICES = [
+  {
+    model: "gpt-6-sol", date: "2026-09-22",
+    rates: [2, 0.2, 2.5, 10], longRates: [4, 0.4, 5, 15],
+    costs: [1.388998, 1.389, 2.278004],
+  },
+  {
+    model: "gpt-6-luna", date: "2026-09-22",
+    rates: [0.1, 0.01, 0.125, 0.5], longRates: [0.2, 0.02, 0.25, 0.75],
+    costs: [0.0694499, 0.06945, 0.1139002],
+  },
+  {
+    model: "gpt-6.1-sol", date: "2026-09-29",
+    rates: [2, 0.1, 2.5, 10], longRates: [4, 0.2, 5, 15],
+    costs: [1.378998, 1.379, 2.258004],
+  },
+];
+
+for (const { model, date, rates, longRates, costs } of GPT6_PRICES) {
+  test(`prices ${model} from its official launch date`, () => {
+    const launch = Date.parse(`${date}T00:00:00.000Z`);
+    assert.equal(priceForModel(model, launch - 1), null);
+    assert.equal(costStatsForUsage(model, { input_tokens: 1 }, launch - 1).unpriced_requests, 1);
+    for (const timestamp of [launch, launch + 1, Date.parse("2026-10-22T00:00:00Z")]) {
+      const price = priceForModel(model, timestamp);
+      assert.equal(price.versionId, `${model}-${date}`);
+      assert.equal(price.provisional, false);
+      assert.deepEqual([price.input, price.cachedInput, price.cacheWrite, price.output], rates);
+      assert.deepEqual(
+        [price.longContext.input, price.longContext.cachedInput, price.longContext.cacheWrite, price.longContext.output],
+        longRates,
+      );
+      assert.equal(price.longContextThresholdTokens, 272_000);
+    }
+  });
+
+  test(`applies ${model} long-context rates to the full request only above 272K input tokens`, () => {
+    for (const [index, input] of [271_999, 272_000, 272_001].entries()) {
+      const estimate = estimateUsageCostDetails(model, {
+        input_tokens: input,
+        cached_input_tokens: 100_000,
+        cache_write_input_tokens: 50_000,
+        output_tokens: 100_000,
+      }, Date.parse(`${date}T00:00:00Z`));
+      assert.ok(Math.abs(estimate.costUsd - costs[index]) < 1e-12, `${input}: ${estimate.costUsd}`);
+    }
+  });
+}
+
+test("does not invent generic GPT-6 or GPT-6.1 aliases", () => {
+  const now = Date.parse("2026-10-22T00:00:00Z");
+  assert.equal(priceForModel("gpt-6", now), null);
+  assert.equal(priceForModel("gpt-6.1", now), null);
+});
 
 test("resolves only the official GPT-5.6 alias to Sol", () => {
   assert.equal(priceForModel("gpt-5.6", JULY_30).model, "gpt-5.6-sol");
@@ -148,7 +202,7 @@ test("exposes event-time pricing metadata and compatibility updatedAt", () => {
   assert.equal(metadata.mode, "event-time");
   assert.equal(metadata.refreshStatus, "cached");
   assert.equal(metadata.updatedAt, metadata.checkedAt.slice(0, 10));
-  assert.equal(metadata.latestEffectiveFrom, "2026-09-03T00:00:00.000Z");
+  assert.equal(metadata.latestEffectiveFrom, "2026-09-29T00:00:00.000Z");
   assert.equal(metadata.longContextThresholdTokens, 272_000);
   assert.equal(metadata.assumedModels[0].assumedModel, "gpt-5.6-luna");
   assert.equal(metadata.assumedModels[0].routes.length, 2);

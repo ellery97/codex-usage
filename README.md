@@ -328,6 +328,17 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 
 金额来自版本化价格目录，口径是 OpenAI API Standard 文本 Token 价格。每条有时间戳的事件按自身 UTC 时间选择不晚于它的最新有效版本；恰好位于价格边界时使用新版本。真正没有时间戳的事件无法安全选择历史价格版本，因此会保留在 Token 统计中但标记为未计价。没有权威生效日的旧价格作为 `provisional` 历史基线，不会冒充正式变价日期。
 
+内置目录包含以下 GPT-6 / 6.1 历史价格。生效日采用[官方更新日志](https://developers.openai.com/api/docs/changelog)中的发布日期，按现有约定记录为 UTC 零点；单价来自[官方定价](https://developers.openai.com/api/docs/pricing)，单位为美元 / 百万 Token，表内为“普通上下文 → 长上下文”：
+
+| 模型 | 生效日 | 输入 | 缓存读取 | 缓存写入（30 分钟） | 输出 |
+| --- | --- | --- | --- | --- | --- |
+| `gpt-6-sol` | 2026-09-22 | 2 → 4 | 0.20 → 0.40 | 2.50 → 5 | 10 → 15 |
+| `gpt-6-luna` | 2026-09-22 | 0.10 → 0.20 | 0.01 → 0.02 | 0.125 → 0.25 | 0.50 → 0.75 |
+| `gpt-6.1-sol` | 2026-09-29 | 2 → 4 | 0.10 → 0.20 | 2.50 → 5 | 10 → 15 |
+
+单次请求的输入（含缓存）超过 272,000 Token 时，整次请求的输入、缓存读写和输出均使用长上下文单价；恰好 272,000 Token 时仍用普通单价。缓存写入按 30 分钟费率估算，尚未区分 12 小时缓存写入。
+本次价格更新复用已有 SQLite 日志索引，重新计算金额即可，无需重建索引；已运行的 Web 服务需重启加载新价格。
+
 内置历史位于 `pricing/openai-pricing.snapshot.json`，运行时校验结果写入数据库旁的 `.codex-usage/pricing-history.json`。
 Web 默认合并内置与已缓存的价格，不联网校验；设为 `CODEX_USAGE_PRICING_REFRESH=1` 后才在监听端口前联网校验。
 CLI 默认仍在聚合和输出前联网校验，可用 `CODEX_USAGE_PRICING_REFRESH=0` 或 `--no-refresh-pricing` 关闭；`--help` 不联网。
@@ -346,7 +357,7 @@ CLI 默认仍在聚合和输出前联网校验，可用 `CODEX_USAGE_PRICING_REF
 参考金额上界 = 官方金额 + 假设金额上界
 ```
 
-这些数字只是事件发生时的 Standard API 等价参考，不是 ChatGPT 订阅账单、Codex credits 或实际扣费；也不包含 Batch、Flex、Fast、区域加价、税费和账户折扣。
+这些数字只是事件发生时的 Standard API 等价参考，不是 ChatGPT 订阅账单、Codex credits 或实际扣费；也不包含 Batch、Flex、Fast、Ultrafast、区域加价、税费和账户折扣。
 
 `codex-auto-review` 没有独立公开价格，因此始终不进入 `estimated_cost_usd`。参考路由按时期展示：2026-04-23 起使用 GPT-5.4 Thinking（low reasoning）基线，2026-07-30 起使用较低证据等级的 GPT-5.6 Luna 基线；两段都以 GPT-5.6 Sol 为上界。跨时期查询会在 `assumedModels[].routes` 中分别列出请求、Token 和金额。
 
@@ -370,6 +381,7 @@ npm run update-pricing -- \
 ```
 
 更新器与启动刷新共享同一个解析器：只读取模型页中的 `Pricing / Text tokens`，并要求页面 `Model ID` 与请求模型完全一致。正式版本会保留被替代的 first-observed provisional 记录用于审计，但选择器会忽略已 superseded 的版本。
+升级时，若旧临时记录与正式版本的页面哈希和普通价格一致、仅缺少长上下文信息，且正式版本生效日不晚于旧记录，则用正式版本替代该错误解析结果。不同页面内容或不同普通价格的历史记录不会据此被替代。
 
 价格依据：
 
