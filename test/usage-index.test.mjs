@@ -855,3 +855,54 @@ test("SQLite and direct aggregation agree across GPT-5.6 price boundaries", asyn
     closeUsageIndex(index);
   }
 });
+
+test("SQLite and direct aggregation agree at GPT-6 launch and long-context boundaries", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-usage-gpt6-pricing-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDir = path.join(directory, "sessions");
+  const dbPath = path.join(directory, "cache.sqlite");
+  await mkdir(sessionsDir, { recursive: true });
+  const models = [
+    ["gpt-6-sol", "2026-09-22"],
+    ["gpt-6-luna", "2026-09-22"],
+    ["gpt-6.1-sol", "2026-09-29"],
+  ];
+  for (const [model, date] of models) {
+    const launch = Date.parse(`${date}T00:00:00Z`);
+    for (const [offset, input] of [[-1, 272_000], [0, 271_999], [1, 272_000], [2, 272_001]]) {
+      const id = `${model}-${offset}`;
+      const usage = {
+        ...usageValue(input, 100_000),
+        cached_input_tokens: 100_000,
+        cache_write_input_tokens: 50_000,
+      };
+      const timestamp = new Date(launch + offset).toISOString();
+      const context = turnContext(model, directory);
+      context.payload.turn_id = id;
+      const lines = [sessionMeta(id, directory), context, tokenEvent(timestamp, usage, usage)];
+      await writeFile(
+        path.join(sessionsDir, `${id}.jsonl`),
+        `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+      );
+    }
+  }
+
+  const options = usageOptions(sessionsDir);
+  const direct = await buildUsagePayload(options);
+  const index = await openUsageIndex({ dbPath, scanCheckTtlMs: 0, enableGc: false });
+  try {
+    await ensureFreshIndex(index, [sessionsDir]);
+    const unchanged = await ensureFreshIndex(index, [sessionsDir]);
+    assert.equal(unchanged.fullRescanFiles, 0);
+    assert.equal(unchanged.scannedBytes, 0);
+    const cached = usagePayloadFromIndex(index, unchanged, options);
+    assert.equal(direct.totals.priced_requests, 9);
+    assert.equal(direct.totals.unpriced_requests, 3);
+    assert.ok(Math.abs(direct.totals.estimated_cost_usd - 10.3248041) < 1e-12);
+    assert.deepEqual(cached.totals, direct.totals);
+    assert.deepEqual(cached.rows, direct.rows);
+    assert.deepEqual(cached.unpricedModels, direct.unpricedModels);
+  } finally {
+    closeUsageIndex(index);
+  }
+});

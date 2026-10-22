@@ -348,6 +348,24 @@ event exactly on a boundary uses the new version. A truly timestamp-less event c
 a historical price version, so it remains in token totals but is marked unpriced. Legacy prices
 without an authoritative effective date remain visible as `provisional` historical baselines.
 
+The built-in catalog includes the following GPT-6 / 6.1 history. Effective dates follow the release
+dates in the [official changelog](https://developers.openai.com/api/docs/changelog), recorded at UTC
+midnight under the existing date convention. Rates come from the
+[official pricing page](https://developers.openai.com/api/docs/pricing), in USD per million tokens;
+each cell shows short-context → long-context pricing:
+
+| Model | Effective date | Input | Cache reads | Cache writes (30 minutes) | Output |
+| --- | --- | --- | --- | --- | --- |
+| `gpt-6-sol` | 2026-09-22 | 2 → 4 | 0.20 → 0.40 | 2.50 → 5 | 10 → 15 |
+| `gpt-6-luna` | 2026-09-22 | 0.10 → 0.20 | 0.01 → 0.02 | 0.125 → 0.25 | 0.50 → 0.75 |
+| `gpt-6.1-sol` | 2026-09-29 | 2 → 4 | 0.10 → 0.20 | 2.50 → 5 | 10 → 15 |
+
+When a request exceeds 272,000 input tokens (including cached tokens), long-context rates apply to
+all input, cache reads, cache writes, and output for that request. Exactly 272,000 input tokens still
+uses short-context rates. Cache-write estimates use 30-minute rates; 12-hour writes are not modeled.
+This pricing update reuses the existing SQLite log index and recalculates costs without rebuilding
+the index. Restart any running Web server to load the new prices.
+
 Built-in history lives at `pricing/openai-pricing.snapshot.json`. Runtime validation is stored as
 `.codex-usage/pricing-history.json` beside the SQLite database. Web startup merges built-in and cached
 prices without online validation by default. Set `CODEX_USAGE_PRICING_REFRESH=1` to validate prices
@@ -377,7 +395,7 @@ reference upper bound = official cost + assumed upper bound
 ```
 
 These values are event-time Standard API-equivalent references, not ChatGPT subscription charges,
-Codex credits, or actual billing. They exclude Batch, Flex, Fast, regional uplifts, taxes, and
+Codex credits, or actual billing. They exclude Batch, Flex, Fast, Ultrafast, regional uplifts, taxes, and
 account-specific discounts.
 
 `codex-auto-review` has no independently published price and never contributes to
@@ -409,6 +427,10 @@ npm run update-pricing -- \
 The updater and startup refresh share the same strict parser: it reads only `Pricing / Text tokens`
 and requires the page's `Model ID` to match exactly. A formal version retains the replaced
 first-observed provisional record for audit, while selectors ignore superseded versions.
+On upgrade, a formal version also replaces an incomplete provisional parse when its page hash and
+short-context rates match, only the long-context information is missing, and the formal effective
+date is no later than the observation's effective date. This correction does not supersede history
+with different page content or short-context rates.
 
 Primary references:
 

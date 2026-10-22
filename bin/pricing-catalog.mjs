@@ -81,7 +81,7 @@ export function mergePricingCatalogs(seedInput, runtimeInput) {
         (candidate) =>
           !candidate.provisional &&
           !candidate.supersededBy &&
-          ratesEqual(candidate, runtimeVersion) &&
+          (ratesEqual(candidate, runtimeVersion) || restoresMissingLongContext(candidate, runtimeVersion)) &&
           Date.parse(candidate.effectiveFrom || 0) <= Date.parse(runtimeVersion.effectiveFrom || 0),
       );
       if (runtimeVersion.provisional && runtimeVersion.effectiveFrom && formal) {
@@ -367,6 +367,22 @@ export function ratesEqual(left, right) {
     if (nullableNumber(left?.longContext?.[field]) !== nullableNumber(right?.longContext?.[field])) return false;
   }
   return true;
+}
+
+function restoresMissingLongContext(formal, observed) {
+  // Identical source content proves this was a parser omission, not a price change.
+  return Boolean(
+    formal.contentHash &&
+    formal.contentHash === observed.contentHash &&
+    formal.effectiveFrom &&
+    formal.longContext &&
+    formal.longContextThresholdTokens &&
+    observed.longContext == null &&
+    observed.longContextThresholdTokens == null &&
+    ["input", "cachedInput", "cacheWrite", "output"].every(
+      (field) => nullableNumber(formal[field]) === nullableNumber(observed[field]),
+    ),
+  );
 }
 
 export function estimateUsageCostWithPrice(price, usage) {
