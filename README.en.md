@@ -186,8 +186,9 @@ conflicts, or interruption discard this run's staging without publishing it.
 Initial UI loading and filters read the published snapshot without waiting for background work.
 Source, range, grouping, sorting, direction, and deduplication apply automatically; row limits and
 custom dates use a 200ms debounce. Startup runs one background check; use **Refresh index** for later
-log changes. The UI polls status once a second during scanning, then reloads the current filters and
-stops polling. Partial failures keep a warning, file details, and retry action visible. Progress
+log changes. The UI polls status once a second during scanning or optional background price validation,
+reloads the current filters on completion, and stops polling once both finish. Source changes discard
+old status requests. Partial failures keep a warning, file details, and retry action visible. Progress
 separates source bytes read from decoded bytes processed; reading compressed bytes is not completion.
 
 The `24h`, `7d`, `30d`, and `12w` Web ranges roll in one-minute buckets: requests within a minute
@@ -350,7 +351,10 @@ without an authoritative effective date remain visible as `provisional` historic
 Built-in history lives at `pricing/openai-pricing.snapshot.json`. Runtime validation is stored as
 `.codex-usage/pricing-history.json` beside the SQLite database. Web startup merges built-in and cached
 prices without online validation by default. Set `CODEX_USAGE_PRICING_REFRESH=1` to validate prices
-online before listening. The CLI still validates online before aggregation and output by default;
+in the background after the startup index is published. Validation does not delay listening; the UI
+updates prices and validation status on completion and shows fallback warnings on failure. Changes
+to validation status alone reuse aggregation and cost caches.
+The CLI still validates online before aggregation and output by default;
 use `CODEX_USAGE_PRICING_REFRESH=0` or `--no-refresh-pricing` to disable it. `--help` stays offline. Refreshes
 use at most six concurrent requests, an eight-second overall timeout, and conditional
 `ETag`/`Last-Modified` requests. Successful models are still updated when only some pages fail;
@@ -474,6 +478,11 @@ Failures contain paths, signatures, error details, attempt times, `retainedPaths
 `usingPreviousIndex`. The `index` field in `/api/usage` carries the same status without removing
 existing statistics. Published revisions invalidate query/cost caches, including changes published
 by another process.
+Status also includes `pricingRefresh: { running, revision }`. `running` covers the startup price check
+both while waiting for indexing and while validating. `revision` increments when that phase settles,
+is local to the server process, and resets on restart. It is independent of index and rate versions,
+so the UI updates even when rates stay unchanged or validation fails. Query cache hits always carry
+current `pricing` metadata.
 
 Common query parameters:
 

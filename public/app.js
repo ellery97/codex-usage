@@ -192,6 +192,7 @@ function shouldAutoPreferDesc(group, sort, direction) {
 
 async function loadData({ blocking = false } = {}) {
   syncControls();
+  cancelIndexPoll();
   window.clearTimeout(filterDebounce);
   filterDebounce = null;
   requestController?.abort();
@@ -224,18 +225,36 @@ async function loadData({ blocking = false } = {}) {
     render();
     updateIndexStatus(payload.index);
   } catch (error) {
-    if (error.name === "AbortError") return;
+    if (error.name === "AbortError" || requestId !== requestSequence) return;
     showError(error.message);
   } finally {
     if (requestId === requestSequence) {
       if (blocking) setBlockingLoading(false);
       else setFilterLoading(false);
+      scheduleIndexPoll();
     }
   }
 }
 
 let indexPollTimer = null;
-let indexPollRunning = false;
+let indexPollController = null;
+
+function cancelIndexPoll() {
+  window.clearTimeout(indexPollTimer);
+  indexPollTimer = null;
+  indexPollController?.abort();
+  indexPollController = null;
+}
+
+function scheduleIndexPoll() {
+  window.clearTimeout(indexPollTimer);
+  indexPollTimer = null;
+  const status = state.indexStatus;
+  if (!indexPollController && (status?.running || status?.pricingRefresh?.running)) {
+    indexPollTimer = window.setTimeout(pollIndexStatus, 1000);
+  }
+}
+
 function updateIndexStatus(status) {
   if (!status) return;
   state.indexStatus = status;
@@ -261,44 +280,65 @@ function updateIndexStatus(status) {
     for (const key of ["totalTokens", "inputTokens", "outputTokens", "cacheRatio", "estimatedCost", "officialCost"] ) text[key].textContent = "--";
     text.totalSub.textContent = "正在建立索引";
   }
-  window.clearTimeout(indexPollTimer);
-  if (status.running && !indexPollRunning) indexPollTimer = window.setTimeout(pollIndexStatus, 1000);
+  scheduleIndexPoll();
 }
 
 async function pollIndexStatus() {
-  indexPollRunning = true;
-  let status;
+  const controller = new AbortController();
+  indexPollController = controller;
+  const sourceScope = els.sourceSelect.value;
+  const requestId = requestSequence;
+  const isCurrent = () => indexPollController === controller && requestId === requestSequence && sourceScope === els.sourceSelect.value;
+  let failed = false;
   try {
-    const query = new URLSearchParams({ sourceScope: els.sourceSelect.value });
-    const response = await fetch(`/api/index/status?${query}`, { cache: "no-store" });
-    status = await response.json();
+    const query = new URLSearchParams({ sourceScope });
+    const response = await fetch(`/api/index/status?${query}`, { cache: "no-store", signal: controller.signal });
+    const status = await response.json();
+    if (!isCurrent()) return;
     if (!response.ok) throw new Error(status.error || "无法读取索引状态");
     updateIndexStatus(status);
-    if (status.revision !== state.data?.index?.revision || (!status.running && state.data?.index?.running)) {
+    if (status.revision !== state.data?.index?.revision || (!status.running && state.data?.index?.running) ||
+        status.pricingRefresh?.revision !== state.data?.index?.pricingRefresh?.revision) {
       await loadData();
     }
   } catch (error) {
+    if (error.name === "AbortError" || !isCurrent()) return;
+    failed = true;
     showError(error.message);
     // Keep the incomplete warning visible and offer an explicit retry.
     els.indexRetry.hidden = false;
     els.refreshButton.disabled = false;
   } finally {
-    indexPollRunning = false;
-    if (status?.running) indexPollTimer = window.setTimeout(pollIndexStatus, 1000);
+    // A filter change may already own a different poll. Never clear its task or
+    // schedule from this request's older response after loadData has completed.
+    if (indexPollController === controller) {
+      indexPollController = null;
+      if (!failed) scheduleIndexPoll();
+    }
   }
 }
 
 async function refreshIndex() {
+  cancelIndexPoll();
+  window.clearTimeout(filterDebounce);
+  filterDebounce = null;
+  requestController?.abort();
+  requestController = new AbortController();
+  const requestId = ++requestSequence;
+  setBlockingLoading(false);
+  setFilterLoading(false);
   els.refreshButton.disabled = true;
   try {
     const query = buildQuery();
     query.set("async", "1");
-    const response = await fetch(`/api/index/refresh?${query}`, { method: "POST" });
+    const response = await fetch(`/api/index/refresh?${query}`, { method: "POST", signal: requestController.signal });
     const status = await response.json();
+    if (requestId !== requestSequence) return;
     if (!response.ok) throw new Error(status.error || "无法刷新索引");
     updateIndexStatus(status);
     if (!status.running) await loadData();
   } catch (error) {
+    if (error.name === "AbortError" || requestId !== requestSequence) return;
     els.refreshButton.disabled = false;
     showError(error.message);
   }

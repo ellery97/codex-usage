@@ -1,5 +1,5 @@
 import path from "node:path";
-import { pricingCatalogVersion } from "./openai-pricing.mjs";
+import { pricingCatalogVersion, pricingMetadata } from "./openai-pricing.mjs";
 import {
   cachedIndexStats,
   getIndexStatus,
@@ -11,10 +11,20 @@ import { usagePayloadFromIndex } from "./usage-index-view.mjs";
 
 export const DEFAULT_QUERY_CACHE_ENTRIES = 64;
 
-export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACHE_ENTRIES } = {}) {
+export function createUsageQueryService(index, {
+  maxEntries = DEFAULT_QUERY_CACHE_ENTRIES,
+  pricingRefreshState = { running: false, revision: 0 },
+} = {}) {
   const resultCache = new Map();
   const capacity = Math.max(1, Number(maxEntries) || DEFAULT_QUERY_CACHE_ENTRIES);
   let activePricingVersion = pricingCatalogVersion();
+
+  function status(sessionsDirs) {
+    return {
+      ...getIndexStatus(index, sessionsDirs),
+      pricingRefresh: { ...pricingRefreshState },
+    };
+  }
 
   function clear() {
     resultCache.clear();
@@ -66,7 +76,10 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
       const key = resultCacheKey(index, options, syncPricingVersion());
       const cached = cachedPayload(key, startedAt);
       const payload = cached || usagePayloadFromIndex(index, syncStats, options);
-      payload.index = getIndexStatus(index, options.sessionsDirs);
+      payload.index = status(options.sessionsDirs);
+      // A 304 or failed pricing check changes metadata without changing rates.
+      // Keep the cached aggregation, but never cache its refresh warning/status.
+      if (cached) payload.pricing = pricingMetadata();
       if (index.generation !== generation) {
         clear();
         continue;
@@ -85,6 +98,7 @@ export function createUsageQueryService(index, { maxEntries = DEFAULT_QUERY_CACH
   return {
     clear,
     query,
+    status,
     get size() {
       return resultCache.size;
     },

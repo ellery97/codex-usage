@@ -24,7 +24,6 @@ import {
   ensureFreshIndex,
   modelsInUsageIndex,
   openUsageIndex,
-  getIndexStatus,
 } from "./usage-index.mjs";
 import { initializePricing, refreshPricing } from "./openai-pricing.mjs";
 import { createUsageQueryService } from "./usage-query.mjs";
@@ -305,7 +304,8 @@ export async function initializeDashboard({
   try {
     const sourceRegistry = discoverSourceRegistry();
     await initializePricingImpl({ dbPath });
-    const queryService = createUsageQueryService(usageIndex);
+    const pricingRefreshState = { running: false, revision: 0 };
+    const queryService = createUsageQueryService(usageIndex, { pricingRefreshState });
     const dashboard = { usageIndex, queryService, sourceRegistry, startupPromise: null };
     dashboard.refresh = (searchParams = new URLSearchParams(), { retryFailures = true } = {}) => {
       refreshSourceRegistry(sourceRegistry);
@@ -317,6 +317,8 @@ export async function initializeDashboard({
     };
     dashboard.startBackgroundRefresh = () => {
       if (dashboard.startupPromise) return dashboard.startupPromise;
+      // Include the queued pricing phase while indexing is still in progress.
+      pricingRefreshState.running = refreshPricingEnabled;
       dashboard.startupPromise = dashboard.refresh(new URLSearchParams(), { retryFailures: false }).then(async (sync) => {
         dashboard.startupSync = sync;
         if (refreshPricingEnabled && !usageIndex.closing) {
@@ -326,6 +328,12 @@ export async function initializeDashboard({
           if (dashboard.pricingRefresh.warning) console.warn(`Pricing: ${dashboard.pricingRefresh.warning}`);
         }
         return sync;
+      }).finally(() => {
+        if (pricingRefreshState.running) {
+          pricingRefreshState.running = false;
+          // Separate from both the persisted index revision and the rate hash.
+          pricingRefreshState.revision++;
+        }
       });
       dashboard.startupPromise.catch((error) => {
         if (!usageIndex.closing) console.warn(`Background index refresh: ${error.message}`);
@@ -373,7 +381,7 @@ export async function startDashboard(options = {}) {
       if (url.pathname === "/api/index/status") {
         if (req.method !== "GET") { methodNotAllowed(res, ["GET"]); return; }
         const options = optionsFromQuery(url.searchParams, { sourceRegistry: dashboard.sourceRegistry });
-        json(res, 200, getIndexStatus(dashboard.usageIndex, options.sessionsDirs));
+        json(res, 200, dashboard.queryService.status(options.sessionsDirs));
         return;
       }
       if (url.pathname === "/api/index/refresh") {
@@ -384,7 +392,7 @@ export async function startDashboard(options = {}) {
         if (url.searchParams.get("async") === "1") {
           dashboard.refresh(url.searchParams);
           const options = optionsFromQuery(url.searchParams, { sourceRegistry: dashboard.sourceRegistry });
-          json(res, 202, getIndexStatus(dashboard.usageIndex, options.sessionsDirs));
+          json(res, 202, dashboard.queryService.status(options.sessionsDirs));
           return;
         }
         const payload = await refreshUsage(
