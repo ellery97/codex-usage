@@ -14,6 +14,7 @@ export const OFFICIAL_MODEL_MARKDOWN_BASE = "https://developers.openai.com/api/d
 export const DEFAULT_PRICING_TIMEOUT_MS = 8000;
 export const DEFAULT_PRICING_CONCURRENCY = 6;
 const LOCK_STALE_MS = 30_000;
+const LONG_CONTEXT_THRESHOLD_PATTERN = /(?:>|\babove\b|\bover\b|\bmore\s+than\b)\s*([0-9][0-9,.]*)\s*([kKmM])?\s+input\s+tokens?/i;
 
 export function normalizeRefreshableModelId(model) {
   const normalized = normalizeModelForPricing(model);
@@ -399,7 +400,7 @@ function readTokenPriceRows(section) {
 }
 
 function readLongContextThreshold(markdown) {
-  const match = /(?:>|above|over)\s*([0-9][0-9,.]*)\s*([kKmM])?\s+input\s+tokens?/i.exec(markdown);
+  const match = LONG_CONTEXT_THRESHOLD_PATTERN.exec(markdown);
   if (!match) return null;
   const base = Number(match[1].replaceAll(",", ""));
   const multiplier = match[2]?.toLowerCase() === "m" ? 1_000_000 : match[2] ? 1_000 : 1;
@@ -407,7 +408,7 @@ function readLongContextThreshold(markdown) {
 }
 
 function readLongContextMultipliers(markdown) {
-  const thresholdMatch = /(?:>|above|over)\s*[0-9][0-9,.]*\s*[kKmM]?\s+input\s+tokens?/i.exec(markdown);
+  const thresholdMatch = LONG_CONTEXT_THRESHOLD_PATTERN.exec(markdown);
   const text = thresholdMatch ? markdown.slice(thresholdMatch.index, thresholdMatch.index + 600) : "";
   const result = {};
   for (const pattern of [

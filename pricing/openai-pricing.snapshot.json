@@ -3,17 +3,20 @@
   "currency": "USD",
   "basis": "OpenAI API Standard text-token pricing per 1M tokens",
   "estimateLabel": "Event-time Standard API-equivalent estimate for local Codex token logs",
-  "checkedAt": "2026-08-20T00:00:00.000Z",
-  "updatedAt": "2026-08-20",
+  "checkedAt": "2026-10-22T02:32:36.454Z",
+  "updatedAt": "2026-10-22",
   "sourceUrls": [
     "https://developers.openai.com/api/docs/models/",
+    "https://developers.openai.com/api/docs/pricing",
+    "https://developers.openai.com/api/docs/changelog",
     "https://openai.com/index/gpt-5-6/",
     "https://alignment.openai.com/auto-review/"
   ],
   "assumptions": [
     "Each event uses the latest non-superseded Standard API price version effective at its timestamp.",
     "Provisional versions preserve prices whose authoritative effective date is unavailable.",
-    "Batch, Flex, Fast, regional uplift, taxes, subscriptions, Codex credits, and account discounts are excluded.",
+    "Batch, Flex, Fast, Ultrafast, regional uplift, taxes, subscriptions, Codex credits, and account discounts are excluded.",
+    "Cache-write estimates use 30-minute rates; 12-hour cache-write pricing is not modeled.",
     "codex-auto-review is excluded from official estimated_cost_usd totals and appears only as a labelled reference estimate."
   ],
   "aliases": {
@@ -557,6 +560,84 @@
           "observedAt": "2026-08-19T00:00:00.000Z",
           "contentHash": "91baa3127be2a68c9b2bb7342915f06119496605dec8927589f61dba68e31f84",
           "evidenceLevel": "provisional-official-current"
+        }
+      ]
+    },
+    "gpt-6-sol": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6-sol.md",
+      "versions": [
+        {
+          "input": 2,
+          "cachedInput": 0.2,
+          "cacheWrite": 2.5,
+          "output": 10,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 4,
+            "output": 15,
+            "cachedInput": 0.4,
+            "cacheWrite": 5
+          },
+          "id": "gpt-6-sol-2026-09-22",
+          "effectiveFrom": "2026-09-22T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "sourceUrl": "https://developers.openai.com/api/docs/changelog",
+          "observedAt": "2026-10-22T02:32:35.817Z",
+          "contentHash": "3dcb62c16386c40e52438e7fa7fb46b979d13cbfc324d0807246e24ce43345bb",
+          "evidenceLevel": "manually-verified-official"
+        }
+      ]
+    },
+    "gpt-6-luna": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6-luna.md",
+      "versions": [
+        {
+          "input": 0.1,
+          "cachedInput": 0.01,
+          "cacheWrite": 0.125,
+          "output": 0.5,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 0.2,
+            "output": 0.75,
+            "cachedInput": 0.02,
+            "cacheWrite": 0.25
+          },
+          "id": "gpt-6-luna-2026-09-22",
+          "effectiveFrom": "2026-09-22T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "sourceUrl": "https://developers.openai.com/api/docs/changelog",
+          "observedAt": "2026-10-22T02:32:36.143Z",
+          "contentHash": "2e4861582095740f5ea84b14bb18fa476a49c426b397b779b964bc144397b451",
+          "evidenceLevel": "manually-verified-official"
+        }
+      ]
+    },
+    "gpt-6.1-sol": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6.1-sol.md",
+      "versions": [
+        {
+          "input": 2,
+          "cachedInput": 0.1,
+          "cacheWrite": 2.5,
+          "output": 10,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 4,
+            "output": 15,
+            "cachedInput": 0.2,
+            "cacheWrite": 5
+          },
+          "id": "gpt-6.1-sol-2026-09-29",
+          "effectiveFrom": "2026-09-29T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "sourceUrl": "https://developers.openai.com/api/docs/changelog",
+          "observedAt": "2026-10-22T02:32:36.454Z",
+          "contentHash": "acfe91d19882aaf7bb52877898684614035a947de02f2955c9de905a7efb1362",
+          "evidenceLevel": "manually-verified-official"
         }
       ]
     }
