@@ -52,7 +52,7 @@ Web 默认使用本地价格；CLI 默认联网校验价格，Web 也可显式�
 
 ## 环境要求
 
-- Node.js，需要支持内置 `node:sqlite` 的版本。当前项目已在 `v22.22.0` 下验证。
+- Node.js `^22.15.0 || >=23.8.0`，需要内置 `node:sqlite` 与 Zstd 解压流。推荐 Node.js 22 或 24 的最新维护版本。
 - 不需要安装第三方 npm 依赖，项目只使用 Node.js 标准库。
 - 本机需要存在至少一个可访问的 Codex 会话日志目录。WSL/Linux 默认从 `~/.codex` 开始，
   原生 Windows 默认扫描 `C:\Users\*\.codex`，并在可用时互相发现另一侧环境。
@@ -67,7 +67,7 @@ Web 默认使用本地价格；CLI 默认联网校验价格，Web 也可显式�
 npm run usage
 ```
 
-此命令默认复用与 Web 共用的 SQLite 增量索引。首次建立索引或升级扫描器时仍需读取历史日志；
+此命令默认复用与 Web 共用的 SQLite 增量索引，同时统计 `.jsonl` 和 `.jsonl.zst`。首次建立索引或升级扫描器时仍需读取历史日志；
 之后只读取变化的文件或新增字节。扫描进度、首次索引/版本升级/文件变化的数量，以及定价和聚合阶段
 输出到 stderr，不混入 JSON/CSV 结果。需要把 npm 输出重定向为 JSON 时，使用
 `npm run --silent usage -- --json > usage.json`，避免 npm 自身的启动提示进入结果。
@@ -131,7 +131,7 @@ http://127.0.0.1:8787
 
 使用说明：
 
-- 需要安装 Node.js 22 或更高版本；项目已在 `v22.22.0` 下验证。
+- Node.js 版本需满足 `^22.15.0 || >=23.8.0`。
 - 项目没有第三方 npm 依赖，正常情况下不需要执行 `npm install`。
 - macOS 默认读取 `~/.codex/sessions`。如果日志位于其他目录，可以使用
   `CODEX_HOME=/path/to/.codex npm run usage`，或通过 `--sessions` 显式指定目录。
@@ -157,8 +157,9 @@ npm run web
 .codex-usage/cache.sqlite
 ```
 
-Web 服务会在监听端口前同步一次默认数据源、加载内置价格和已有的 `pricing-history.json`，并预热
-常用去重范围和默认 Dashboard 查询。默认不联网校验价格，也跳过为价格校验查询历史日志模型的步骤。
+Web 服务加载已有索引、内置价格和 `pricing-history.json` 后即可监听端口，再在后台补扫历史日志。
+已有统计先展示；没有索引时显示“正在建立索引”。补扫期间提示“历史数据尚未补齐”，筛选仍可使用。
+默认不联网校验价格，也跳过为价格校验查询历史日志模型的步骤。
 需要在本次启动时联网校验，可显式运行：
 
 ```bash
@@ -167,21 +168,32 @@ CODEX_USAGE_PRICING_REFRESH=1 npm run web
 
 也可使用 `npm run update-pricing` 手动更新本地价格目录，更新后重启已运行的 Web 服务。
 
-没有索引时会完整扫描历史 JSONL；之后每个文件会保存读取偏移、
-解析上下文、inode 和边界哈希。安全追加只读取新增字节；截断、替换、同尺寸改写、边界哈希或扫描器
-版本不匹配时才完整重扫该文件。不完整的末尾 JSON 行会留到下次追加后处理。
+扫描支持会话目录、归档目录和自定义来源中的 `.jsonl`、`.jsonl.zst`，时间筛选依据事件时间，
+不会根据文件名日期跳过扫描。压缩文件使用 Node.js 原生 Zstd 流逐帧解压，不生成解压后的临时日志；
+最多同时处理 2 个压缩文件，并受总扫描并发限制。
 
-页面首次加载和筛选变化只查询当前 SQLite 快照，不访问 JSONL 文件。数据源、范围、分组、排序、方向
-和去重条件会自动应用，行数与自定义日期使用 200ms 防抖。服务启动后产生的新日志不会自动进入统计；
-点击“刷新索引”后才会检查文件、读取新增字节并清空查询缓存。
+普通日志保存读取偏移、解析上下文、文件身份和边界哈希；安全追加只读取新增字节。压缩文件首次发现或
+大小、修改时间、文件身份变化时完整读取；未变化时不打开、不解压、不做全文件哈希。
+同一事件同时存在于两种格式时，全局去重只计一次；`--dedupe-scope file` 仍分别统计每个文件。
+本次 schema 增量升级保留已有事件，普通日志扫描器版本保持为 6，无需重建已有版本 6 的索引。
+
+扫描结果分批写入 SQLite 临时暂存表；结束后统一发布成功结果，查询始终读取已发布快照。读取失败的文件
+单独列出，已有索引则保留旧统计；普通日志消失而压缩替代文件失败时，也保留对应旧索引。
+页面持续提示统计不完整，提供失败详情和重试按钮。启动时跳过未变化的已知失败文件，文件变化或手动刷新时重试。
+数据库写入失败、发布冲突或进程中断不会发布本轮暂存结果，下次刷新重新处理。
+
+页面首次加载和筛选只查询当前 SQLite 快照，不等待后台补扫。数据源、范围、分组、排序、方向
+和去重条件自动应用，行数与自定义日期使用 200ms 防抖。启动后进行一次后台检查；之后的新日志通过
+“刷新索引”手动更新。扫描期间每秒查询一次状态，完成后按当前筛选加载新统计并停止轮询。
+进度分别显示源文件读取量和解压后处理量，读完压缩字节不代表解析结束。
 
 Web 的 `24h`、`7d`、`30d` 和 `12w` 范围按当前时间的分钟桶滚动：同一分钟内可复用查询缓存，跨分钟
 会生成新的实际边界。`today` 按目标 IANA 时区的日期计算当天 0 点，并在该时区跨日时立即切换。
 
 全局去重结果按规范化的数据源目录组合持久化，文件变化后只修复受影响的事件 key，最多保留
 8 个最近使用的范围。旧索引会原地迁移；如果索引中的扫描器版本已过期，升级后的首次索引刷新会逐文件
-完整重读现有 JSONL，以恢复 cache-write、事件指纹、累计 Token key 后缀和可恢复解析状态。每个文件转换成功后
-立即提交，后续启动不会重复处理；全部转换完成后，普通追加恢复为增量读取。
+完整重读日志，以恢复 cache-write、事件指纹、累计 Token key 后缀和可恢复解析状态。成功结果在扫描结束时
+统一提交；普通追加继续增量读取。
 页面上的“数据源”筛选可以在全部目录、WSL/Linux、Windows 三种口径间切换；WSL/Linux 和 Windows
 口径都包含对应环境可访问的当前会话与归档会话。API 仍兼容 `sourceScope=local`，它表示运行时本地
 的当前会话目录。
@@ -420,11 +432,20 @@ Web 服务提供：
 
 ```text
 GET /api/usage
+GET /api/index/status
+POST /api/index/refresh?async=1
 POST /api/index/refresh
 ```
 
 `GET /api/usage` 缺省为只读 SQLite 快照，不触发索引刷新；兼容参数 `refreshIndex=1` 仍可显式请求刷新。
-新调用方应使用 `POST /api/index/refresh` 执行刷新，然后继续使用 GET 做查询。
+新调用方可使用 `POST /api/index/refresh?async=1` 启动后台刷新，立即返回 `202` 和当前索引状态。
+相同数据源的重复请求复用当前任务，其他数据源刷新串行执行。省略 `async=1` 保留同步刷新及原有筛选参数语义。
+
+`GET /api/index/status` 支持 `sourceScope`，返回 `state`、`phase`、`running`、`hasSnapshot`、`incomplete`、
+`revision`、`publishedAt`、`pendingFiles`、`completedFiles`、`scannedBytes`、`decodedBytes`、`failedFiles` 和 `failures`。
+发现阶段的待处理数量尚未确定；计数指本轮变化文件。每条失败含路径、文件特征、错误、尝试时间、
+`retainedPaths` 和 `usingPreviousIndex`。`GET /api/usage` 的 `index` 字段携带同样的状态；原有统计字段保留。
+索引发布版本会失效查询/费用缓存，也用于识别其他进程已发布的结果。
 
 常用查询参数：
 
@@ -451,7 +472,7 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 `pricing.mode = "event-time"`、`checkedAt`、`latestEffectiveFrom`、`refreshStatus` 和 `usedFallback`。
 `stats` 还包含 `indexRefreshSkipped`、`queryCacheHit`、`costCacheHit`、`scanDurationMs`、
 `dedupeDurationMs`、`aggregationDurationMs`、`totalDurationMs`、`incrementalFiles`、
-`fullRescanFiles`、`scannedBytes`、`unknownTimestampEvents`、`unknownTimestampTokens`、
+`fullRescanFiles`、`scannedBytes`、`decodedBytes`、`failedFiles`、`unknownTimestampEvents`、`unknownTimestampTokens`、
 `excludedUnknownTimestampEvents` 和 `excludedUnknownTimestampTokens`。查询缓存命中时各阶段耗时为 `0`，
 `totalDurationMs` 始终是当前请求耗时。
 
@@ -462,7 +483,7 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 ├── bin/
 │   ├── codex-token-usage.mjs      # CLI 公共入口
 │   ├── codex-token-usage-core.mjs # 参数、数据源与基础工具
-│   ├── codex-usage-server.mjs     # 本地 Web 服务与启动预热
+│   ├── codex-usage-server.mjs     # 本地 Web 服务与后台补扫
 │   ├── session-scanner.mjs        # 可恢复的增量 JSONL 扫描器
 │   ├── usage-aggregation.mjs      # Direct/Cache 一致的聚合与 CLI 输出
 │   ├── usage-index.mjs            # SQLite 索引、迁移与计价切片
@@ -501,14 +522,16 @@ http://127.0.0.1:8787/api/usage?range=30d&group=day&sort=key&desc=1&limit=60&ded
 
 ## 常见问题
 
-### 首次打开 Web 页面为什么比较慢？
+### 为什么打开后历史统计仍在增加？
 
-首次启动且没有旧索引时需要完整扫描历史 JSONL。已有旧索引会原地迁移，但扫描器版本升级后的第一次
-索引刷新也必须逐文件完整重读日志，才能恢复旧索引没有保存的原始字段和正确去重键；例如历史日志约为
-23 GB 时，本次升级可能读取约 23 GB。已成功转换的文件会立即提交，中断后只重试仍为旧版本的文件。
-扫描器版本 6 会重建轮次身份并保留事件时间来源，修正历史副本重复计费，以及会话创建时间回退值抢占真实请求时间的问题。
-此前异常偏高的金额可能因此明显下降；已经使用版本 5 缓存的用户也需要一次扫描，以补全时间来源。
-完成后，普通追加只读取新增字节；只有文件被改写、替换或恢复状态失效时才完整重扫该文件。
+Web 会先展示已发布索引，后台补扫压缩历史日志。首次补扫需要解压并解析历史数据，期间会提示数据尚未补齐。
+未变化的压缩文件之后直接复用缓存。普通日志保持扫描器版本 6，只有更旧的解析缓存需要升级重读。
+
+### 读取失败时 CLI 如何处理？
+
+可用统计正常输出，stderr 列出失败文件；退出码 `2` 表示统计不完整，`1` 表示命令无法完成。
+JSON/CSV stdout 保持可解析。再次运行同一命令可重试；缓存模式下已有数据的失败文件保留上次索引，
+无缓存完整扫描只包含本次成功读取的文件。Web 可通过失败提示中的重试按钮或异步刷新 API 重试。
 
 ### 会不会把会话内容上传出去？
 
@@ -525,10 +548,23 @@ JSONL 文件的原始记录。旧版 Codex 可能把历史 rollout 内容复制�
 ### 为什么 Web 和 CLI 的速度不同？
 
 `npm run usage` 默认复用增量索引；直接运行原始 CLI 默认完整扫描，也可通过 `--use-cache` 复用索引。Web 的筛选请求使用
-`refreshIndex=0`，只读取 SQLite、持久化全局去重结果、计价切片和最多 64 项查询结果缓存；只有
-“刷新索引”会访问日志文件，因此加载完成后的筛选不会再次走扫描流程。
+`refreshIndex=0`，只读取 SQLite、持久化全局去重结果、计价切片和最多 64 项查询结果缓存；
+启动后台检查和“刷新索引”会访问日志文件，因此筛选不会再次走扫描流程。
 
 ## 开发验证
+
+扫描基准使用合成日志，独立进程运行至少 5 次，输出耗时中位数、峰值 RSS、源文件/解压字节数、扫描期间 API 延迟：
+
+```bash
+npm run benchmark:scan
+# 可调整无关日志体积（MiB/压缩文件）；固定用量事件数，观察内存是否随体积线性增长
+node bin/benchmark-session-scan.mjs --runs=5 --sizes=8,32,128
+```
+
+本次验证结果见 [压缩日志扫描验证记录](docs/compressed-scan-validation.md)。
+
+覆盖首次建索引、未变化重跑、仅追加普通日志、仅修改一个压缩文件；断言未变化读取/解压量为 0，
+追加普通日志不重读压缩历史，首次补扫完成前 HTTP 可查询。跨版本与跨平台检查见 CI。
 
 语法检查：
 

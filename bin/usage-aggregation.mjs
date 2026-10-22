@@ -163,6 +163,7 @@ export async function buildUsagePayload(options) {
   for (const sessionsDir of options.sessionsDirs) {
     files.push(...(await findJsonlFiles(sessionsDir)));
   }
+  files.splice(0, files.length, ...new Set(files));
   files.sort(compareCanonicalFilePaths);
 
   const events = [];
@@ -193,6 +194,8 @@ export async function buildUsagePayload(options) {
     }
     if (inRange(event, options)) events.push(event);
   }
+  const failures = [];
+  let decodedBytes = 0;
   let scannedBytes = 0;
   let completedFiles = 0;
   options.onProgress?.({
@@ -201,7 +204,21 @@ export async function buildUsagePayload(options) {
   });
 
   for (const file of files) {
-    const scanned = await scanSessionFile(file);
+    let scanned, read = 0, decoded = 0;
+    try {
+      scanned = await scanSessionFile(file, { onProgress: (bytes, detail) => {
+        scannedBytes += bytes - read;
+        decodedBytes += detail.decodedBytes - decoded;
+        read = bytes;
+        decoded = detail.decodedBytes;
+        options.onProgress?.({ phase: "scan", files: files.length, pendingFiles: files.length,
+          completedFiles, scannedBytes, decodedBytes, direct: true });
+      } });
+    } catch (error) {
+      failures.push({ path: file, code: error.code || "LOG_READ_FAILED", message: error.message, usingPreviousIndex: false });
+      completedFiles += 1;
+      continue;
+    }
     scanStats.duplicateTokenEvents += scanned.stats.duplicateTokenEvents;
     scanStats.parseErrors += scanned.stats.parseErrors;
     scanStats.rawTokenEvents += scanned.stats.tokenEvents;
@@ -229,11 +246,10 @@ export async function buildUsagePayload(options) {
         includeEvent(event);
       }
     }
-    scannedBytes += scanned.scannedBytes;
     completedFiles += 1;
     options.onProgress?.({
       phase: "scan", files: files.length, pendingFiles: files.length,
-      completedFiles, scannedBytes, direct: true, done: completedFiles === files.length,
+      completedFiles, scannedBytes, decodedBytes, direct: true, done: completedFiles === files.length,
     });
   }
 
@@ -259,7 +275,8 @@ export async function buildUsagePayload(options) {
     rowCount: result.rowCount,
     assumedModels: result.assumedModels,
     unpricedModels: result.unpricedModels,
-    stats: scanStats,
+    stats: { ...scanStats, scannedBytes, decodedBytes, failedFiles: failures.length },
+    index: { running: false, incomplete: failures.length > 0, failedFiles: failures.length, failures },
     pricing: pricingMetadata(),
   };
 }
@@ -290,7 +307,7 @@ async function buildUsagePayloadFromCache(options) {
     payload.stats.totalDurationMs = Math.round(performance.now() - startedAt);
     return payload;
   } finally {
-    indexModule.closeUsageIndex(index);
+    await indexModule.closeUsageIndex(index);
   }
 }
 
@@ -426,6 +443,13 @@ export async function runCli(argv, { parseArgs }) {
   options.onPricingWarning = (message) => console.error(`codex-token-usage: ${message}`);
   const payload = await buildUsagePayload(options);
   options.onProgress({ phase: "complete" });
+  if (payload.index?.incomplete) {
+    console.error(`codex-token-usage: Statistics incomplete (${payload.index.failedFiles} failed files). Rerun this command to retry.`);
+    for (const failure of payload.index.failures) {
+      console.error(`${failure.path}: ${failure.message}${failure.usingPreviousIndex ? " (using previous index)" : " (skipped)"}`);
+    }
+    process.exitCode = 2;
+  }
   if (options.json) {
     console.log(JSON.stringify(payload, null, 2));
   } else if (options.csv) {
@@ -456,15 +480,19 @@ function cliProgressReporter() {
         break;
       case "scan": {
         const counts = `${progress.completedFiles}/${progress.pendingFiles} files; read ${formatProgressBytes(progress.scannedBytes)}`;
+        const decoded = `; processed ${formatProgressBytes(progress.decodedBytes || 0)} decoded`;
         const plan = progress.direct
           ? "Full scan"
           : `Index scan (${progress.newFiles} new, ${progress.upgradeFiles} scanner upgrades, ${progress.modifiedFiles} modified; ${progress.cacheFiles} cached)`;
-        message = `${phaseChanged ? plan : "Scanning"}: ${counts}`;
+        message = `${phaseChanged ? plan : "Scanning"}: ${counts}${decoded}`;
         if (progress.done && !progress.direct) {
           message += `; ${progress.incrementalFiles} incremental, ${progress.fullRescanFiles} full scans`;
         }
         break;
       }
+      case "publish":
+        message = "Publishing the completed index snapshot...";
+        break;
       case "pricing":
         message = progress.refresh ? "Validating model prices..." : "Loading local model prices...";
         break;

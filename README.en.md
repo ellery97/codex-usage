@@ -55,8 +55,7 @@ metadata. Session bodies are not printed or uploaded.
 
 ## Requirements
 
-- Node.js 22 or later, including the built-in `node:sqlite` module; the project has been verified with
-  `v22.22.0`.
+- Node.js `^22.15.0 || >=23.8.0`, including built-in SQLite and Zstd streams. Use a maintained Node.js 22 or 24 release.
 - No third-party runtime npm dependencies are required.
 - At least one accessible Codex session directory. The default starts at `~/.codex` on WSL/Linux,
   scans `C:\Users\*\.codex` on native Windows, and discovers the other environment when available.
@@ -139,7 +138,7 @@ http://127.0.0.1:8787
 
 Notes:
 
-- Node.js 22 or later is required; the project has been verified with `v22.22.0`.
+- Node.js must satisfy `^22.15.0 || >=23.8.0`.
 - No third-party npm dependencies are required, so `npm install` is normally unnecessary.
 - The default macOS source is `~/.codex/sessions`. If the logs are elsewhere, use
   `CODEX_HOME=/path/to/.codex npm run usage` or pass `--sessions` explicitly.
@@ -154,8 +153,9 @@ The equivalent direct command is:
 node --no-warnings --expose-gc ./bin/codex-usage-server.mjs
 ```
 
-The server synchronizes the default source before listening, loads built-in prices and any existing
-`pricing-history.json`, and prewarms common canonical scopes plus the default dashboard query.
+The server listens after loading the existing index and local prices, then scans logs in the background.
+It displays the published snapshot immediately, or a building-index empty state if none exists.
+A persistent incomplete-history notice stays visible during scanning; filters remain usable.
 By default it skips both online price validation and the historical-model query used for that validation.
 To enable online validation for a particular startup, run:
 
@@ -166,16 +166,29 @@ CODEX_USAGE_PRICING_REFRESH=1 npm run web
 You can also run `npm run update-pricing` to update the local price catalog manually, then restart
 any running Web server to load it.
 
-The index lives at `.codex-usage/cache.sqlite` by default. A new index scans historical JSONL files;
-later safe appends resume from a saved byte offset and parser context. Truncation, replacement,
-same-size rewrites, inode or boundary-hash changes, and scanner-version changes trigger a full
-rescan of that file. An incomplete trailing JSON line remains pending until the next append.
+The index lives at `.codex-usage/cache.sqlite`. Discovery includes `.jsonl` and `.jsonl.zst` in
+session, archive, and custom source directories. Date filters use event timestamps, never filenames.
+Zstd files stream through native Node.js decoders one frame at a time; no decompressed log is written
+to disk. At most two compressed files decode concurrently, within the overall scan concurrency limit.
 
-Initial UI loading and filter changes use the current SQLite snapshot without touching JSONL.
+Ordinary logs retain their byte offsets, parser context, file identity, and boundary hashes for
+incremental appends. Compressed files are fully read when first discovered or when size, mtime, or
+identity changes; unchanged files are not opened, decompressed, or hashed. Global deduplication counts
+a shared event only once across both formats; `--dedupe-scope file` counts each file separately.
+The additive schema migration preserves existing events and keeps ordinary scanner version 6.
+
+Results are staged in SQLite TEMP tables in batches and published together after scanning. Queries
+continue reading the previous published snapshot. Failed files are listed separately; their previous
+index is retained, including a missing plain file whose compressed replacement failed. Startup skips
+unchanged known failures; file changes or manual refresh retry them. Database errors, publication
+conflicts, or interruption discard this run's staging without publishing it.
+
+Initial UI loading and filters read the published snapshot without waiting for background work.
 Source, range, grouping, sorting, direction, and deduplication apply automatically; row limits and
-custom dates use a 200ms debounce. New logs written after startup do not enter the statistics until
-the user clicks **Refresh index**, which checks files, reads appended bytes, and clears the query
-cache.
+custom dates use a 200ms debounce. Startup runs one background check; use **Refresh index** for later
+log changes. The UI polls status once a second during scanning, then reloads the current filters and
+stops polling. Partial failures keep a warning, file details, and retry action visible. Progress
+separates source bytes read from decoded bytes processed; reading compressed bytes is not completion.
 
 The `24h`, `7d`, `30d`, and `12w` Web ranges roll in one-minute buckets: requests within a minute
 reuse a stable boundary, while the next minute gets a new cache key. `today` starts at midnight in
@@ -185,8 +198,8 @@ Global canonical representatives are persisted per normalized source-root set. O
 keys are repaired after file changes, and at most eight recently used scopes are retained. Existing
 indexes migrate in place. When the stored scanner version is stale, the first index refresh after an
 upgrade fully rereads each existing JSONL file to recover cache-write values, event fingerprints,
-cumulative-token key suffixes, and resumable parser state. Each converted file commits
-independently; once conversion finishes, ordinary appends return to incremental reads.
+cumulative-token key suffixes, and resumable parser state. Successful results publish together
+after scanning; ordinary appends continue using incremental reads.
 
 The source selector supports all directories, WSL/Linux, and Windows. The WSL/Linux and Windows
 scopes each include the accessible current and archived session directories for that environment.
@@ -443,12 +456,24 @@ The web server exposes:
 
 ```text
 GET /api/usage
+GET /api/index/status
+POST /api/index/refresh?async=1
 POST /api/index/refresh
 ```
 
 `GET /api/usage` is snapshot-only by default and does not refresh the index. The compatibility
 parameter `refreshIndex=1` can still explicitly refresh before returning the query. New callers
-should use `POST /api/index/refresh` for the write operation and keep GETs read-only.
+can use `POST /api/index/refresh?async=1`, which returns `202` with current status immediately.
+Repeated requests for the same roots share the running job; different scopes serialize. Omitting
+`async=1` preserves synchronous refresh and existing query parameter semantics.
+
+`GET /api/index/status` accepts `sourceScope` and returns `state`, `phase`, `running`, `hasSnapshot`,
+`incomplete`, `revision`, `publishedAt`, `pendingFiles`, `completedFiles`, `scannedBytes`, `decodedBytes`,
+`failedFiles`, and `failures`. Pending counts are unknown during discovery and count changed files.
+Failures contain paths, signatures, error details, attempt times, `retainedPaths`, and
+`usingPreviousIndex`. The `index` field in `/api/usage` carries the same status without removing
+existing statistics. Published revisions invalidate query/cost caches, including changes published
+by another process.
 
 Common query parameters:
 
@@ -479,7 +504,7 @@ The response keeps existing fields and adds `assumedModels`, `unpricedModels`, p
 totals, and event-time catalog metadata such as `pricing.mode = "event-time"`, `checkedAt`,
 `latestEffectiveFrom`, `refreshStatus`, and `usedFallback`. Performance metadata includes
 `indexRefreshSkipped`, `queryCacheHit`, `costCacheHit`, `scanDurationMs`, `dedupeDurationMs`,
-`aggregationDurationMs`, `totalDurationMs`, `incrementalFiles`, `fullRescanFiles`, `scannedBytes`,
+`aggregationDurationMs`, `totalDurationMs`, `incrementalFiles`, `fullRescanFiles`, `scannedBytes`, `decodedBytes`, `failedFiles`,
 `unknownTimestampEvents`, `unknownTimestampTokens`, `excludedUnknownTimestampEvents`, and
 `excludedUnknownTimestampTokens`. On a result-cache hit, phase durations are zero and
 `totalDurationMs` measures the current request.
@@ -491,7 +516,7 @@ totals, and event-time catalog metadata such as `pricing.mode = "event-time"`, `
 ├── bin/
 │   ├── codex-token-usage.mjs      # Public CLI entry point
 │   ├── codex-token-usage-core.mjs # Options, sources, and shared utilities
-│   ├── codex-usage-server.mjs     # Local Web server and startup prewarming
+│   ├── codex-usage-server.mjs     # Local Web server and background scanning
 │   ├── session-scanner.mjs        # Resumable incremental JSONL scanner
 │   ├── usage-aggregation.mjs      # Direct/cache-consistent aggregation and CLI output
 │   ├── usage-index.mjs            # SQLite index, migrations, and costed slices
@@ -531,18 +556,20 @@ totals, and event-time catalog metadata such as `pricing.mode = "event-time"`, `
 
 ## FAQ
 
-### Why is the first web page load slow?
+### Why do historical totals increase after opening the dashboard?
 
-A first start with no index scans historical JSONL. Existing indexes migrate in place, but the first
-refresh after a scanner-version upgrade must fully reread each log to recover fields that the old
-index did not save, including cache-write values, event fingerprints, cumulative-token key suffixes,
-and resumable parser state. A 23 GB history can therefore require about 23 GB of reads during that
-upgrade. Successfully converted files commit independently, so an interrupted migration retries
-only files still on the old version. Scanner version 6 rebuilds turn identities and preserves timestamp
-sources, fixing duplicate charges for copied history and preventing session creation fallbacks from
-displacing real request times. Previously inflated totals can drop substantially. Version 5 caches
-also require one scan to recover timestamp sources. After migration, safe appends read only new bytes;
-rewritten files or invalid parser state fall back to a full rescan.
+Web displays the published snapshot first, then fills in compressed history in the background.
+The first scan must decompress historical files; an incomplete-history notice remains visible until
+publication. Unchanged compressed files subsequently reuse the cache. Ordinary scanner version 6
+is preserved; only older parser caches need an upgrade scan.
+
+### What happens when a file cannot be read?
+
+CLI prints available statistics, lists failures on stderr, and exits with code `2` for incomplete
+results (`1` means the command failed). JSON/CSV stdout remains parseable. Rerun the same command to
+retry. Cached mode retains prior data for failed files; a stateless scan includes only files read
+successfully in that run. Web exposes failure details and a retry button, also available through the
+asynchronous refresh API.
 
 ### Does the tool upload session content?
 
@@ -560,9 +587,24 @@ deduplicates only inside each JSONL file and is useful for inspecting raw file r
 `npm run usage` reuses the incremental index by default. The direct CLI scans JSONL by default and
 can reuse the index with `--use-cache`. Web filters send
 `refreshIndex=0` and reuse SQLite, persisted canonical events, one costed slice, and up to 64 query
-results. Only **Refresh index** checks session files.
+results. Only the startup background check and **Refresh index** inspect session files.
 
 ## Development validation
+
+The scan benchmark uses synthetic logs and at least five fresh-process runs. It reports median
+duration, peak RSS, source/decoded bytes, and API latency during scanning:
+
+```bash
+npm run benchmark:scan
+node bin/benchmark-session-scan.mjs --runs=5 --sizes=8,32,128
+```
+
+See the [validation record](docs/compressed-scan-validation.md) for measured results.
+
+It covers cold indexing, unchanged reruns, a plain-file append, and changing one compressed file.
+The size sweep keeps the usage-event count fixed while increasing irrelevant MiB per compressed
+file. Assertions require zero warm read/decode bytes, no compressed rescans for plain appends, and
+HTTP responses before cold scanning completes. See CI for runtime and platform coverage.
 
 Install dependencies and run the complete check:
 

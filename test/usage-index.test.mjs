@@ -65,7 +65,7 @@ test("migrates old indexes in place without discarding derived rows", async (t) 
     assert.equal(index.db.prepare("SELECT COUNT(*) AS count FROM events").get().count, 1);
     assert.equal(index.db.prepare("SELECT COUNT(*) AS count FROM files").get().count, 1);
     assert.equal(index.db.prepare("SELECT scanner_version FROM files").get().scanner_version, 0);
-    assert.equal(index.db.prepare("PRAGMA user_version").get().user_version, 4);
+    assert.equal(index.db.prepare("PRAGMA user_version").get().user_version, 5);
   } finally {
     closeUsageIndex(index);
   }

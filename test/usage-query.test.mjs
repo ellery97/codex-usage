@@ -236,7 +236,7 @@ test("web startup uses cached prices without network or model discovery by defau
   const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
   let dashboard = null;
   t.after(async () => {
-    closeUsageIndex(dashboard?.usageIndex);
+    await dashboard?.close();
     for (const [key, value] of previousEnv) {
       if (value == null) delete process.env[key];
       else process.env[key] = value;
@@ -271,13 +271,14 @@ test("web startup uses cached prices without network or model discovery by defau
     if (setting == null) delete process.env.CODEX_USAGE_PRICING_REFRESH;
     else process.env.CODEX_USAGE_PRICING_REFRESH = setting;
     dashboard = await initializeDashboard({ dbPath: path.join(directory, "cache.sqlite"), enableGc: false });
+    await dashboard.startupPromise;
     const payload = await dashboard.queryService.query(options(sessionsDir), { refreshIndex: false });
     assert.equal(payload.totals.requests, 1);
     assert.equal(payload.totals.priced_requests, 1);
     assert.equal(payload.totals.estimated_cost_usd, 0.00023);
     assert.equal(payload.pricing.refreshStatus, "cached");
     assert.equal(fetchMock.mock.callCount(), 0);
-    closeUsageIndex(dashboard.usageIndex);
+    await dashboard.close();
     dashboard = null;
   }
 });
@@ -286,7 +287,7 @@ test("opt-in web startup indexes logs before refreshing newly observed models", 
   const directory = await mkdtemp(path.join(tmpdir(), "codex-dashboard-startup-test-"));
   let dashboard = null;
   t.after(async () => {
-    closeUsageIndex(dashboard?.usageIndex);
+    await dashboard?.close();
     await rm(directory, { recursive: true, force: true });
   });
   const previousCodexHome = process.env.CODEX_HOME;
@@ -324,6 +325,7 @@ test("opt-in web startup indexes logs before refreshing newly observed models", 
     },
   });
 
+  await dashboard.startupPromise;
   assert.equal(dashboard.startupSync.changedFiles, 1);
   assert.deepEqual(refreshedModels, ["new-valid-model"]);
   const warmedOptions = optionsFromQuery(
@@ -338,14 +340,14 @@ test("opt-in web startup indexes logs before refreshing newly observed models", 
     }),
   );
   const warmed = await dashboard.queryService.query(warmedOptions, { refreshIndex: false });
-  assert.equal(warmed.stats.queryCacheHit, true);
+  assert.equal(warmed.stats.queryCacheHit, false);
 });
 
 test("refresh rediscovery finds a local sessions directory created after startup", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-dashboard-late-sessions-test-"));
   let dashboard = null;
   t.after(async () => {
-    closeUsageIndex(dashboard?.usageIndex);
+    await dashboard?.close();
     await rm(directory, { recursive: true, force: true });
   });
 

@@ -1,6 +1,8 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
+import { decompressZstdFrames } from "./zstd-stream.mjs";
 import {
   diffUsage,
   hasUsage,
@@ -17,13 +19,17 @@ const UNKNOWN_MODEL = "(unknown model)";
 const CONTEXT_FIELDS = ["sessionId", "sessionCreatedAtMs", "cwd", "model"];
 
 function sessionIdFromPath(filePath) {
-  const base = path.basename(filePath, ".jsonl");
+  const base = path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/, "");
   const match = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(base);
   return match ? match[1] : base;
 }
 
-export async function scanSessionFile(filePath) {
-  return scanSessionFileRange(filePath);
+export function isCompressedSessionFile(filePath) {
+  return filePath.endsWith(".jsonl.zst");
+}
+
+export async function scanSessionFile(filePath, options = {}) {
+  return scanSessionFileRange(filePath, options);
 }
 
 function emptyContextFlags() {
@@ -362,8 +368,14 @@ export async function scanSessionFileRange(
     state: savedState = null,
     seenTotals: savedTotals = null,
     onProgress = null,
+    signal = undefined,
   } = {},
 ) {
+  signal?.throwIfAborted();
+  const compressed = isCompressedSessionFile(filePath);
+  if (compressed && (startOffset !== 0 || savedState != null || savedTotals != null)) {
+    throw new Error(`Compressed session logs must be read from the beginning: ${filePath}`);
+  }
   const events = [];
   const seenTotals = new Set(Array.from(savedTotals || [], cumulativeKeyFromStoredEventKey));
   const stats = {
@@ -381,38 +393,54 @@ export async function scanSessionFileRange(
   const runtime = createScanRuntime(state);
   let processedOffset = start;
   let trailingParts = [];
+  let decodedBytes = 0;
+  if (compressed && fileSize === 0) {
+    throw new Error(`Empty Zstd session log: ${filePath}`);
+  }
 
   if (fileSize > start) {
-    const input = createReadStream(filePath, { start, end: fileSize - 1 });
+    const input = createReadStream(filePath, { start, end: fileSize - 1, signal });
+    if (compressed && onProgress) input.on("data", () => onProgress(input.bytesRead, { decodedBytes }));
     let chunkStart = start;
-    for await (const chunk of input) {
-      let cursor = 0;
-      let newlineIndex = chunk.indexOf(0x0a, cursor);
-      while (newlineIndex !== -1) {
-        trailingParts.push(chunk.subarray(cursor, newlineIndex));
-        let lineBuffer = trailingParts.length === 1 ? trailingParts[0] : Buffer.concat(trailingParts);
-        if (lineBuffer.at(-1) === 0x0d) {
-          lineBuffer = lineBuffer.subarray(0, -1);
+    const consume = async (chunks) => {
+      for await (const chunk of chunks) {
+        signal?.throwIfAborted();
+        let cursor = 0;
+        let newlineIndex = chunk.indexOf(0x0a, cursor);
+        while (newlineIndex !== -1) {
+          trailingParts.push(chunk.subarray(cursor, newlineIndex));
+          let lineBuffer = trailingParts.length === 1 ? trailingParts[0] : Buffer.concat(trailingParts);
+          if (lineBuffer.at(-1) === 0x0d) {
+            lineBuffer = lineBuffer.subarray(0, -1);
+          }
+          processSessionLine(
+            filePath,
+            lineBuffer.toString("utf8"),
+            state,
+            runtime,
+            seenTotals,
+            events,
+            stats,
+          );
+          processedOffset = chunkStart + newlineIndex + 1;
+          trailingParts = [];
+          cursor = newlineIndex + 1;
+          newlineIndex = chunk.indexOf(0x0a, cursor);
         }
-        processSessionLine(
-          filePath,
-          lineBuffer.toString("utf8"),
-          state,
-          runtime,
-          seenTotals,
-          events,
-          stats,
-        );
-        processedOffset = chunkStart + newlineIndex + 1;
-        trailingParts = [];
-        cursor = newlineIndex + 1;
-        newlineIndex = chunk.indexOf(0x0a, cursor);
+        if (cursor < chunk.length) {
+          trailingParts.push(chunk.subarray(cursor));
+        }
+        chunkStart += chunk.length;
+        decodedBytes += chunk.length;
+        if (onProgress) onProgress(compressed ? input.bytesRead : chunkStart - start, { decodedBytes });
       }
-      if (cursor < chunk.length) {
-        trailingParts.push(chunk.subarray(cursor));
-      }
-      chunkStart += chunk.length;
-      if (onProgress) onProgress(chunkStart - start);
+    };
+    if (compressed) {
+      // pipeline propagates read/decode failures and destroys both streams. A
+      // valid prefix of a truncated frame must never be published as a file.
+      await pipeline(input, decompressZstdFrames, consume, { signal });
+    } else {
+      await pipeline(input, consume, { signal });
     }
   }
 
@@ -432,10 +460,12 @@ export async function scanSessionFileRange(
       { trailing: true },
     );
     if (complete) {
-      processedOffset = fileSize;
+      processedOffset = start + decodedBytes;
+    } else if (compressed) {
+      throw new Error(`Incomplete JSONL tail in compressed session log: ${filePath}`);
     }
-  } else if (fileSize === start || processedOffset < fileSize) {
-    processedOffset = fileSize;
+  } else {
+    processedOffset = start + decodedBytes;
   }
 
   updateUnresolvedState(state, runtime);
@@ -445,9 +475,10 @@ export async function scanSessionFileRange(
     events,
     stats,
     state: serializedState,
-    incrementalSafe: serializedState.incrementalSafe,
+    incrementalSafe: !compressed && serializedState.incrementalSafe,
     requiresFullRescan: runtime.requiresFullRescan,
-    processedOffset,
+    processedOffset: compressed ? fileSize : processedOffset,
     scannedBytes: fileSize - start,
+    decodedBytes,
   };
 }

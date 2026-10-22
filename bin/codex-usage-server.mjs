@@ -24,7 +24,7 @@ import {
   ensureFreshIndex,
   modelsInUsageIndex,
   openUsageIndex,
-  prewarmCanonicalScope,
+  getIndexStatus,
 } from "./usage-index.mjs";
 import { initializePricing, refreshPricing } from "./openai-pricing.mjs";
 import { createUsageQueryService } from "./usage-query.mjs";
@@ -292,36 +292,54 @@ export async function initializeDashboard({
   refreshPricingEnabled = process.env.CODEX_USAGE_PRICING_REFRESH === "1",
   initializePricingImpl = initializePricing,
   refreshPricingImpl = refreshPricing,
+  scanFileImpl,
+  startRefresh = true,
 } = {}) {
   const usageIndex = await openUsageIndex({
     dbPath,
     scanCheckTtlMs,
     scanConcurrency,
     enableGc,
+    scanFileImpl,
   });
   try {
     const sourceRegistry = discoverSourceRegistry();
-    const allOptions = optionsFromQuery(new URLSearchParams(), { sourceRegistry });
-    const startupSync = await ensureFreshIndex(usageIndex, allOptions.sessionsDirs, { force: true });
-
     await initializePricingImpl({ dbPath });
-    const pricingRefresh = await refreshPricingImpl({
-      dbPath,
-      enabled: refreshPricingEnabled,
-      models: refreshPricingEnabled ? modelsInUsageIndex(usageIndex, allOptions.sessionsDirs) : [],
-    });
-    if (pricingRefresh.warning) {
-      console.warn(`Pricing: ${pricingRefresh.warning}`);
-    }
-
-    await prewarmDashboardScopes(usageIndex, sourceRegistry);
     const queryService = createUsageQueryService(usageIndex);
-    await queryService.query(optionsFromQuery(defaultDashboardSearchParams(), { sourceRegistry }), {
-      refreshIndex: false,
-    });
-    return { usageIndex, queryService, sourceRegistry, pricingRefresh, startupSync };
+    const dashboard = { usageIndex, queryService, sourceRegistry, startupPromise: null };
+    dashboard.refresh = (searchParams = new URLSearchParams(), { retryFailures = true } = {}) => {
+      refreshSourceRegistry(sourceRegistry);
+      const options = optionsFromQuery(searchParams, { sourceRegistry });
+      const job = ensureFreshIndex(usageIndex, options.sessionsDirs, { force: true, retryFailures });
+      // Background requests are observed here; synchronous callers still receive errors.
+      job.catch(() => {});
+      return job;
+    };
+    dashboard.startBackgroundRefresh = () => {
+      if (dashboard.startupPromise) return dashboard.startupPromise;
+      dashboard.startupPromise = dashboard.refresh(new URLSearchParams(), { retryFailures: false }).then(async (sync) => {
+        dashboard.startupSync = sync;
+        if (refreshPricingEnabled && !usageIndex.closing) {
+          dashboard.pricingRefresh = await refreshPricingImpl({
+            dbPath, enabled: true, models: modelsInUsageIndex(usageIndex, sourceRegistry.all),
+          });
+          if (dashboard.pricingRefresh.warning) console.warn(`Pricing: ${dashboard.pricingRefresh.warning}`);
+        }
+        return sync;
+      });
+      dashboard.startupPromise.catch((error) => {
+        if (!usageIndex.closing) console.warn(`Background index refresh: ${error.message}`);
+      });
+      return dashboard.startupPromise;
+    };
+    dashboard.close = async () => {
+      await closeUsageIndex(usageIndex);
+      await dashboard.startupPromise?.catch(() => {});
+    };
+    if (startRefresh) dashboard.startBackgroundRefresh();
+    return dashboard;
   } catch (error) {
-    closeUsageIndex(usageIndex);
+    await closeUsageIndex(usageIndex);
     throw error;
   }
 }
@@ -331,7 +349,7 @@ export async function startDashboard(options = {}) {
   const portConfig = requestedPort === undefined
     ? resolvePortConfig()
     : { port: parsePort(requestedPort, "port"), explicit: true, source: "options" };
-  const dashboard = await initializeDashboard(initializeOptions);
+  const dashboard = await initializeDashboard({ ...initializeOptions, startRefresh: false });
   let boundPort = portConfig.port || DEFAULT_PORT;
   const requestHandler = async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${boundPort}`}`);
@@ -352,9 +370,21 @@ export async function startDashboard(options = {}) {
         json(res, 200, payload);
         return;
       }
+      if (url.pathname === "/api/index/status") {
+        if (req.method !== "GET") { methodNotAllowed(res, ["GET"]); return; }
+        const options = optionsFromQuery(url.searchParams, { sourceRegistry: dashboard.sourceRegistry });
+        json(res, 200, getIndexStatus(dashboard.usageIndex, options.sessionsDirs));
+        return;
+      }
       if (url.pathname === "/api/index/refresh") {
         if (req.method !== "POST") {
           methodNotAllowed(res, ["POST"]);
+          return;
+        }
+        if (url.searchParams.get("async") === "1") {
+          dashboard.refresh(url.searchParams);
+          const options = optionsFromQuery(url.searchParams, { sourceRegistry: dashboard.sourceRegistry });
+          json(res, 202, getIndexStatus(dashboard.usageIndex, options.sessionsDirs));
           return;
         }
         const payload = await refreshUsage(
@@ -393,48 +423,15 @@ export async function startDashboard(options = {}) {
       explicit: portConfig.explicit,
     });
     boundPort = listening.port;
-    listening.server.once("close", () => closeUsageIndex(dashboard.usageIndex));
+    listening.server.once("close", () => { dashboard.close().catch(console.error); });
+    dashboard.startBackgroundRefresh();
     console.log(`Codex usage dashboard: http://${host}:${boundPort}`);
     console.log(`SQLite index: ${dashboard.usageIndex.dbPath}`);
-    return { ...dashboard, server: listening.server, port: boundPort };
+    return Object.assign(dashboard, { server: listening.server, port: boundPort });
   } catch (error) {
-    closeUsageIndex(dashboard.usageIndex);
+    await dashboard.close();
     throw error;
   }
-}
-
-async function prewarmDashboardScopes(index, sourceRegistry) {
-  const seen = new Set();
-  for (const sourceScope of ["all", "local", "wsl", "windows"]) {
-    const options = optionsFromQuery(new URLSearchParams({ sourceScope }), { sourceRegistry });
-    const key = options.sessionsDirs.slice().sort().join("\n");
-    if (seen.has(key) || !(await anyDirectoryExists(options.sessionsDirs))) continue;
-    prewarmCanonicalScope(index, options.sessionsDirs);
-    seen.add(key);
-  }
-}
-
-async function anyDirectoryExists(dirs) {
-  for (const dir of dirs) {
-    try {
-      if ((await stat(dir)).isDirectory()) return true;
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
-  return false;
-}
-
-function defaultDashboardSearchParams() {
-  return new URLSearchParams({
-    sourceScope: "all",
-    range: "7d",
-    group: "day",
-    sort: "key",
-    desc: "1",
-    limit: "60",
-    dedupeScope: "global",
-  });
 }
 
 function isMainModule() {
@@ -442,7 +439,14 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  startDashboard().catch((error) => {
+  startDashboard().then((dashboard) => {
+    const shutdown = () => {
+      dashboard.server.close();
+      dashboard.close().catch((error) => { console.error(error.message); process.exitCode = 1; });
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  }).catch((error) => {
     console.error(`codex-usage-server: ${error.message}`);
     process.exitCode = 1;
   });
