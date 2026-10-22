@@ -2,6 +2,7 @@ import { formatRange, rankingMetricForSort } from "./dashboard-formatters.js";
 
 const state = {
   data: null,
+  indexStatus: null,
   rows: [],
   blockingLoading: false,
   chartPoints: [],
@@ -9,6 +10,12 @@ const state = {
 };
 
 const els = {
+  indexStatus: document.getElementById("indexStatus"),
+  indexMessage: document.getElementById("indexMessage"),
+  indexProgress: document.getElementById("indexProgress"),
+  indexFailures: document.getElementById("indexFailures"),
+  indexFailureList: document.getElementById("indexFailureList"),
+  indexRetry: document.getElementById("indexRetry"),
   sourceSelect: document.getElementById("sourceSelect"),
   rangeSelect: document.getElementById("rangeSelect"),
   groupSelect: document.getElementById("groupSelect"),
@@ -126,7 +133,7 @@ function setBlockingLoading(value, message = "正在读取本地索引") {
   els.loadingOverlay.hidden = !value;
   els.loadingMessage.textContent = message;
   for (const control of els.controlGrid.querySelectorAll("select, input, button")) {
-    control.disabled = value;
+    control.disabled = value || (control === els.refreshButton && Boolean(state.indexStatus?.running));
   }
 }
 
@@ -183,8 +190,9 @@ function shouldAutoPreferDesc(group, sort, direction) {
   return true;
 }
 
-async function loadData({ refreshIndex = false, blocking = false } = {}) {
+async function loadData({ blocking = false } = {}) {
   syncControls();
+  cancelIndexPoll();
   window.clearTimeout(filterDebounce);
   filterDebounce = null;
   requestController?.abort();
@@ -194,7 +202,7 @@ async function loadData({ refreshIndex = false, blocking = false } = {}) {
     setFilterLoading(false);
     setBlockingLoading(
       true,
-      refreshIndex ? "正在刷新本地索引并统计" : "正在读取本地索引",
+      "正在读取本地索引",
     );
   } else {
     if (state.blockingLoading) setBlockingLoading(false);
@@ -202,7 +210,7 @@ async function loadData({ refreshIndex = false, blocking = false } = {}) {
   }
   try {
     const query = buildQuery();
-    query.set("refreshIndex", refreshIndex ? "1" : "0");
+    query.set("refreshIndex", "0");
     const response = await fetch(`/api/usage?${query.toString()}`, {
       cache: "no-store",
       signal: requestController.signal,
@@ -215,14 +223,124 @@ async function loadData({ refreshIndex = false, blocking = false } = {}) {
     state.data = payload;
     state.rows = payload.rows || [];
     render();
+    updateIndexStatus(payload.index);
   } catch (error) {
-    if (error.name === "AbortError") return;
+    if (error.name === "AbortError" || requestId !== requestSequence) return;
     showError(error.message);
   } finally {
     if (requestId === requestSequence) {
       if (blocking) setBlockingLoading(false);
       else setFilterLoading(false);
+      scheduleIndexPoll();
     }
+  }
+}
+
+let indexPollTimer = null;
+let indexPollController = null;
+
+function cancelIndexPoll() {
+  window.clearTimeout(indexPollTimer);
+  indexPollTimer = null;
+  indexPollController?.abort();
+  indexPollController = null;
+}
+
+function scheduleIndexPoll() {
+  window.clearTimeout(indexPollTimer);
+  indexPollTimer = null;
+  const status = state.indexStatus;
+  if (!indexPollController && (status?.running || status?.pricingRefresh?.running)) {
+    indexPollTimer = window.setTimeout(pollIndexStatus, 1000);
+  }
+}
+
+function updateIndexStatus(status) {
+  if (!status) return;
+  state.indexStatus = status;
+  els.indexStatus.hidden = !status.incomplete;
+  els.refreshButton.disabled = status.running;
+  els.indexRetry.hidden = status.running || !status.incomplete;
+  els.indexRetry.textContent = status.failedFiles ? "重试失败文件" : "重新刷新索引";
+  els.indexMessage.textContent = status.running
+    ? (status.hasSnapshot ? "历史数据尚未补齐，当前展示上次已发布统计；仍可调整筛选。" : "正在建立索引，历史数据尚未补齐。")
+    : status.state === "failed" ? `索引刷新失败，统计可能不完整：${status.error}`
+    : status.failedFiles ? `统计不完整：${status.failedFiles} 个文件读取失败。` : "索引已更新";
+  const bytes = (value) => `${(Number(value || 0) / 1024 / 1024).toFixed(1)} MiB`;
+  const phases = { discover: "正在查找日志", check: "正在检查文件", scan: "正在补扫", publish: "正在发布统计" };
+  els.indexProgress.hidden = !status.running;
+  els.indexProgress.textContent = `${phases[status.phase] || "正在准备"} · 已处理 ${status.completedFiles || 0} / ${status.pendingFiles ?? "待确认"} 个文件 · 源文件读取 ${bytes(status.scannedBytes)} · 解压后处理 ${bytes(status.decodedBytes)}`;
+  els.indexFailures.hidden = !status.failedFiles;
+  els.indexFailureList.replaceChildren(...(status.failures || []).map((failure) => {
+    const item = document.createElement("li");
+    item.textContent = `${failure.path}：${failure.message}（${failure.usingPreviousIndex ? "使用上次索引" : "已跳过"}）`;
+    return item;
+  }));
+  if (!status.hasSnapshot && state.data) {
+    for (const key of ["totalTokens", "inputTokens", "outputTokens", "cacheRatio", "estimatedCost", "officialCost"] ) text[key].textContent = "--";
+    text.totalSub.textContent = "正在建立索引";
+  }
+  scheduleIndexPoll();
+}
+
+async function pollIndexStatus() {
+  const controller = new AbortController();
+  indexPollController = controller;
+  const sourceScope = els.sourceSelect.value;
+  const requestId = requestSequence;
+  const isCurrent = () => indexPollController === controller && requestId === requestSequence && sourceScope === els.sourceSelect.value;
+  let failed = false;
+  try {
+    const query = new URLSearchParams({ sourceScope });
+    const response = await fetch(`/api/index/status?${query}`, { cache: "no-store", signal: controller.signal });
+    const status = await response.json();
+    if (!isCurrent()) return;
+    if (!response.ok) throw new Error(status.error || "无法读取索引状态");
+    updateIndexStatus(status);
+    if (status.revision !== state.data?.index?.revision || (!status.running && state.data?.index?.running) ||
+        status.pricingRefresh?.revision !== state.data?.index?.pricingRefresh?.revision) {
+      await loadData();
+    }
+  } catch (error) {
+    if (error.name === "AbortError" || !isCurrent()) return;
+    failed = true;
+    showError(error.message);
+    // Keep the incomplete warning visible and offer an explicit retry.
+    els.indexRetry.hidden = false;
+    els.refreshButton.disabled = false;
+  } finally {
+    // A filter change may already own a different poll. Never clear its task or
+    // schedule from this request's older response after loadData has completed.
+    if (indexPollController === controller) {
+      indexPollController = null;
+      if (!failed) scheduleIndexPoll();
+    }
+  }
+}
+
+async function refreshIndex() {
+  cancelIndexPoll();
+  window.clearTimeout(filterDebounce);
+  filterDebounce = null;
+  requestController?.abort();
+  requestController = new AbortController();
+  const requestId = ++requestSequence;
+  setBlockingLoading(false);
+  setFilterLoading(false);
+  els.refreshButton.disabled = true;
+  try {
+    const query = buildQuery();
+    query.set("async", "1");
+    const response = await fetch(`/api/index/refresh?${query}`, { method: "POST", signal: requestController.signal });
+    const status = await response.json();
+    if (requestId !== requestSequence) return;
+    if (!response.ok) throw new Error(status.error || "无法刷新索引");
+    updateIndexStatus(status);
+    if (!status.running) await loadData();
+  } catch (error) {
+    if (error.name === "AbortError" || requestId !== requestSequence) return;
+    els.refreshButton.disabled = false;
+    showError(error.message);
   }
 }
 
@@ -246,7 +364,7 @@ function render() {
   text.sourceLabel.textContent = formatSource(data.source);
   text.sourceLabel.title = sourceTitle(data.source);
   text.rangeLabel.textContent = `范围：${formatRange(data.range, data.timezone)}`;
-  text.updatedLabel.textContent = `更新时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+  text.updatedLabel.textContent = `索引更新时间：${data.index?.publishedAt ? new Date(data.index.publishedAt).toLocaleString("zh-CN", { hour12: false }) : "--"}`;
 
   text.totalTokens.textContent = compactNumber(totals.total_tokens);
   text.totalSub.textContent = `${fullNumber(totals.requests)} 次请求`;
@@ -947,7 +1065,8 @@ els.dedupeSelect.addEventListener("change", () => applyFilters());
 els.limitInput.addEventListener("input", () => applyFilters({ debounce: true }));
 els.fromInput.addEventListener("input", () => applyFilters({ debounce: true }));
 els.toInput.addEventListener("input", () => applyFilters({ debounce: true }));
-els.refreshButton.addEventListener("click", () => loadData({ refreshIndex: true, blocking: true }));
+els.refreshButton.addEventListener("click", refreshIndex);
+els.indexRetry.addEventListener("click", refreshIndex);
 els.tableSearch.addEventListener("input", renderTable);
 els.usageChart.addEventListener("mousemove", handleChartMove);
 els.usageChart.addEventListener("mouseleave", () => {

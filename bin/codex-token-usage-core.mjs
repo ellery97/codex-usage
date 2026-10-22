@@ -350,7 +350,7 @@ export async function findJsonlFiles(root) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(fullPath);
-      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      } else if (entry.isFile() && /\.jsonl(?:\.zst)?$/.test(entry.name)) {
         files.push(fullPath);
       }
     }

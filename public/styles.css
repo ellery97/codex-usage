@@ -953,3 +953,15 @@ tbody tr:hover {
     animation-iteration-count: 1 !important;
   }
 }
+
+.index-status {
+  margin: 16px 0;
+  padding: 14px 18px;
+  border: 1px solid #c58b33;
+  border-radius: 12px;
+  background: color-mix(in srgb, #c58b33 10%, transparent);
+}
+.index-status p { margin: 0 0 8px; }
+.index-status li { overflow-wrap: anywhere; margin: 8px 0; }
+.index-status details { max-height: 260px; overflow: auto; }
+.index-status button { margin-top: 10px; }

@@ -111,6 +111,16 @@
         </button>
       </section>
 
+      <section id="indexStatus" class="index-status" aria-label="索引状态" hidden>
+        <p id="indexMessage" role="status" aria-live="polite"></p>
+        <p id="indexProgress"></p>
+        <details id="indexFailures" hidden>
+          <summary>读取失败的文件</summary>
+          <ul id="indexFailureList"></ul>
+        </details>
+        <button id="indexRetry" type="button" hidden>重试失败文件</button>
+      </section>
+
       <section class="metric-grid" aria-label="Token 汇总">
         <article class="metric-card accent-blue">
           <span>Token 总量</span>

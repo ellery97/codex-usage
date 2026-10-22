@@ -136,6 +136,7 @@ test("startDashboard binds an ephemeral port and serves health", async (t) => {
     } else if (dashboard?.usageIndex) {
       closeUsageIndex(dashboard.usageIndex);
     }
+    await dashboard?.close();
     await rm(directory, { recursive: true, force: true });
   });
 

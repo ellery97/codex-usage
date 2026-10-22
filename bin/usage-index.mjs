@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
-import { mkdir, open, stat } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import {
-  findJsonlFiles,
   formatDateKey,
   formatDateTime,
 } from "./codex-token-usage.mjs";
@@ -14,12 +12,12 @@ import {
   pricingMetadata,
 } from "./openai-pricing.mjs";
 import { sqlPathFilter } from "./path-utils.mjs";
-import { scanSessionFileRange, SESSION_SCANNER_VERSION } from "./session-scanner.mjs";
+import { scanSessionFileRange } from "./session-scanner.mjs";
+import { refreshUsageIndex, pathInRoots } from "./usage-index-refresh.mjs";
 import { assumedModelsFromAggregatedRows } from "./usage-costs.mjs";
 import {
   CANONICAL_SCHEMA_SQL,
   ensureCanonicalScope,
-  markCanonicalChange,
 } from "./usage-canonical.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,8 +27,7 @@ const ROOT = path.resolve(__dirname, "..");
 export const DEFAULT_DB_PATH = path.join(ROOT, ".codex-usage", "cache.sqlite");
 export const DEFAULT_SCAN_CHECK_TTL_MS = 1000;
 export const DEFAULT_SCAN_CONCURRENCY = 8;
-const USAGE_INDEX_SCHEMA_VERSION = 4;
-const BOUNDARY_HASH_BYTES = 64 * 1024;
+const USAGE_INDEX_SCHEMA_VERSION = 5;
 
 const COST_AGGREGATE_COLUMNS = `
   COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS estimated_cost_usd,
@@ -51,6 +48,7 @@ export async function openUsageIndex({
   scanCheckTtlMs = DEFAULT_SCAN_CHECK_TTL_MS,
   scanConcurrency = DEFAULT_SCAN_CONCURRENCY,
   enableGc = true,
+  scanFileImpl = scanSessionFileRange,
 } = {}) {
   const resolvedDbPath = path.resolve(dbPath);
   await mkdir(path.dirname(resolvedDbPath), { recursive: true });
@@ -157,52 +155,65 @@ export async function openUsageIndex({
     scanCheckTtlMs: Number(scanCheckTtlMs),
     scanConcurrency: Math.max(1, Math.min(32, Number(scanConcurrency || DEFAULT_SCAN_CONCURRENCY))),
     enableGc,
+    scanFileImpl,
+    activity: { state: "idle", phase: "idle" },
+    pendingFailures: [],
+    closing: false,
+    controller: null,
     checkedAt: 0,
     lastSync: null,
     refreshPromise: null,
     refreshKey: null,
-    generation: 0,
+    generation: Number(db.prepare("SELECT revision FROM index_publication WHERE id = 1").get().revision),
     costCacheKey: null,
     statements: {
       allFiles: db.prepare("SELECT * FROM files"),
-      deleteEvents: db.prepare("DELETE FROM events WHERE file_path = ?"),
-      deleteFile: db.prepare("DELETE FROM files WHERE path = ?"),
       fileKeys: db.prepare("SELECT total_usage_key FROM events WHERE file_path = ?"),
-      insertFile: db.prepare(`
-        INSERT INTO files (
-          path, size, mtime_ms, events_count, duplicate_token_events, parse_errors, raw_token_events,
-          scanned_at_ms, scan_offset, parser_state_json, scanner_version, file_dev, file_ino, boundary_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `),
-      updateFile: db.prepare(`
-        UPDATE files
-        SET size = ?,
-            mtime_ms = ?,
-            events_count = ?,
-            duplicate_token_events = ?,
-            parse_errors = ?,
-            raw_token_events = ?,
-            scanned_at_ms = ?,
-            scan_offset = ?,
-            parser_state_json = ?,
-            scanner_version = ?,
-            file_dev = ?,
-            file_ino = ?,
-            boundary_hash = ?
-        WHERE path = ?
-      `),
-      insertEvent: db.prepare(`
-        INSERT INTO events (
-          file_path, event_index, timestamp_ms, has_event_timestamp, session_created_at_ms, session_id, total_usage_key, cwd, model,
-          input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `),
     },
   };
 }
 
 export function closeUsageIndex(index) {
-  index?.db?.close?.();
+  if (!index || index.closePromise) return index?.closePromise;
+  index.closing = true;
+  index.controller?.abort();
+  if (!index.refreshPromise) {
+    index.db.close();
+    index.closePromise = Promise.resolve();
+  } else {
+    index.closePromise = index.refreshPromise.catch(() => {}).then(() => index.db.close());
+  }
+  return index.closePromise;
+}
+
+export function syncPublishedRevision(index) {
+  const publication = index.db.prepare("SELECT * FROM index_publication WHERE id = 1").get();
+  if (index.generation !== Number(publication.revision)) {
+    invalidateUsageCaches(index);
+    index.generation = Number(publication.revision);
+    index.checkedAt = 0;
+  }
+  return publication;
+}
+
+export function getIndexStatus(index, roots = null) {
+  const publication = syncPublishedRevision(index);
+  const failures = new Map(index.db.prepare("SELECT * FROM scan_failures").all().map((row) => [row.path, {
+    path: row.path, signature: row.signature, code: row.error_code, message: row.message,
+    attemptedAt: row.attempted_at_ms, retainedPaths: JSON.parse(row.retained_paths_json),
+  }]));
+  for (const failure of index.pendingFailures) failures.set(failure.path, failure);
+  const selected = [...failures.values()].filter((row) => !roots || pathInRoots(row.path, roots));
+  const running = Boolean(index.refreshPromise);
+  const incomplete = running || selected.length > 0 || index.activity.state === "failed" || !publication.has_snapshot;
+  return {
+    files: 0, pendingFiles: null, completedFiles: 0, scannedBytes: 0, decodedBytes: 0,
+    ...index.activity,
+    running, incomplete, hasSnapshot: Boolean(publication.has_snapshot),
+    revision: Number(publication.revision), publishedAt: publication.published_at_ms,
+    failedFiles: selected.length,
+    failures: selected.map((row) => ({ ...row, usingPreviousIndex: row.retainedPaths.length > 0 })),
+  };
 }
 
 export function invalidateUsageCaches(index, { bumpGeneration = false } = {}) {
@@ -226,30 +237,43 @@ export function modelsInUsageIndex(index, sessionsDirs = null) {
     .map((row) => String(row.model));
 }
 
-export async function ensureFreshIndex(index, sessionsDirs, { force = false, onProgress = null } = {}) {
-  const now = Date.now();
-  const key = sessionsKey(sessionsDirs);
-  if (!force && index.lastSync?.sessionsKey === key && now - index.checkedAt < index.scanCheckTtlMs) {
+export async function ensureFreshIndex(index, sessionsDirs, {
+  force = false, onProgress = null, retryFailures = true,
+} = {}) {
+  const roots = Array.from(new Set(sessionsDirs.map((dir) => path.resolve(dir)))).sort();
+  const key = sessionsKey(roots);
+  while (index.refreshPromise) {
+    if (index.refreshKey === key) return index.refreshPromise;
+    // A different scope is serialized even if the preceding refresh failed.
+    await index.refreshPromise.catch(() => {});
+  }
+  if (index.closing) throw new Error("Usage index is closing");
+  syncPublishedRevision(index);
+  if (!force && index.lastSync?.sessionsKey === key && Date.now() - index.checkedAt < index.scanCheckTtlMs) {
     return index.lastSync;
   }
-  if (index.refreshPromise) {
-    if (index.refreshKey === key) {
-      return index.refreshPromise;
-    }
-    await index.refreshPromise;
-    if (
-      !force &&
-      index.lastSync?.sessionsKey === key &&
-      Date.now() - index.checkedAt < index.scanCheckTtlMs
-    ) {
-      return index.lastSync;
-    }
-  }
-
   index.refreshKey = key;
-  index.refreshPromise = refreshIndex(index, sessionsDirs, key, onProgress).finally(() => {
+  index.controller = new AbortController();
+  index.activity = { state: "running", phase: "discover", startedAt: Date.now() };
+  index.pendingFailures = [];
+  index.refreshPromise = refreshUsageIndex(index, roots, {
+    retryFailures, onProgress, signal: index.controller.signal,
+  }).then((result) => {
+    syncPublishedRevision(index);
+    const sync = { ...cachedIndexStats(index, roots), ...result, publishedRevision: index.generation, indexRefreshSkipped: false };
+    index.checkedAt = Date.now();
+    index.lastSync = sync;
+    Object.assign(index.activity, { state: result.failedFiles ? "partial" : "complete", phase: "idle", finishedAt: Date.now() });
+    if (index.enableGc && typeof globalThis.gc === "function") globalThis.gc();
+    return sync;
+  }).catch((error) => {
+    Object.assign(index.activity, { state: "failed", phase: "idle", error: error.message, finishedAt: Date.now() });
+    throw error;
+  }).finally(() => {
     index.refreshPromise = null;
     index.refreshKey = null;
+    index.controller = null;
+    index.pendingFailures = [];
   });
   return index.refreshPromise;
 }
@@ -272,6 +296,8 @@ export function cachedIndexStats(index, sessionsDirs) {
     incrementalFiles: 0,
     fullRescanFiles: 0,
     scannedBytes: 0,
+    decodedBytes: 0,
+    failedFiles: getIndexStatus(index, sessionsDirs).failedFiles,
     scanDurationMs: 0,
     indexRefreshSkipped: true,
     indexPath: index.dbPath,
@@ -361,6 +387,8 @@ export function usagePayloadFromIndex(index, syncStats, options) {
         incrementalFiles: syncStats.incrementalFiles || 0,
         fullRescanFiles: syncStats.fullRescanFiles || 0,
         scannedBytes: syncStats.scannedBytes || 0,
+        decodedBytes: syncStats.decodedBytes || 0,
+        failedFiles: syncStats.failedFiles || 0,
         scanDurationMs: syncStats.scanDurationMs,
         dedupeDurationMs: dedupeStats.dedupeDurationMs,
         aggregationDurationMs,
@@ -375,6 +403,7 @@ export function usagePayloadFromIndex(index, syncStats, options) {
         canonicalUpdatedKeys: dedupeStats.canonicalUpdatedKeys,
         indexPath: syncStats.indexPath,
       },
+      index: getIndexStatus(index, options.sessionsDirs),
       pricing: pricingMetadata(),
   };
 }
@@ -481,319 +510,6 @@ function tempCostTableExists(index) {
       .prepare("SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = 'request_costed_events'")
       .get(),
   );
-}
-
-async function refreshIndex(index, sessionsDirs, key, onProgress) {
-  const startedAt = Date.now();
-  onProgress?.({ phase: "discover" });
-  const filePaths = await collectJsonlFiles(sessionsDirs);
-  onProgress?.({ phase: "check", files: filePaths.length });
-  const currentPaths = new Set(filePaths);
-  const knownFiles = new Map(index.statements.allFiles.all().map((row) => [row.path, row]));
-
-  let deletedFiles = 0;
-  for (const filePath of knownFiles.keys()) {
-    if (filePathInSessions(filePath, sessionsDirs) && !currentPaths.has(filePath)) {
-      deleteIndexedFile(index, filePath);
-      deletedFiles += 1;
-      knownFiles.delete(filePath);
-    }
-  }
-
-  const fileStats = await mapLimit(filePaths, 32, async (filePath) => {
-    const fileStat = await stat(filePath);
-    return {
-      filePath,
-      size: fileStat.size,
-      mtimeMs: fileStat.mtimeMs,
-      dev: String(fileStat.dev),
-      ino: String(fileStat.ino),
-    };
-  });
-
-  let changedFiles = 0;
-  let incrementalFiles = 0;
-  let fullRescanFiles = 0;
-  let scannedBytes = 0;
-  const pendingFiles = fileStats.filter(
-    (fileInfo) => !isUnchangedFile(knownFiles.get(fileInfo.filePath), fileInfo),
-  );
-  const newFiles = pendingFiles.filter((fileInfo) => !knownFiles.has(fileInfo.filePath)).length;
-  const upgradeFiles = pendingFiles.filter((fileInfo) => {
-    const cached = knownFiles.get(fileInfo.filePath);
-    return cached && Number(cached.scanner_version) !== SESSION_SCANNER_VERSION;
-  }).length;
-  const progress = {
-    phase: "scan",
-    files: fileStats.length,
-    pendingFiles: pendingFiles.length,
-    cacheFiles: fileStats.length - pendingFiles.length,
-    newFiles,
-    upgradeFiles,
-    modifiedFiles: pendingFiles.length - newFiles - upgradeFiles,
-  };
-  let readBytes = 0;
-  let lastProgressAt = 0;
-  function reportScanProgress(force = false) {
-    if (!onProgress) return;
-    const now = Date.now();
-    if (!force && now - lastProgressAt < 250) return;
-    lastProgressAt = now;
-    onProgress({
-      ...progress,
-      completedFiles: changedFiles,
-      scannedBytes: readBytes,
-      incrementalFiles,
-      fullRescanFiles,
-      done: force && changedFiles === pendingFiles.length,
-    });
-  }
-  reportScanProgress(true);
-  await mapLimit(pendingFiles, index.scanConcurrency, async (fileInfo) => {
-    const cached = knownFiles.get(fileInfo.filePath);
-    let fileReadBytes = 0;
-    const onFileProgress = onProgress
-      ? (bytes) => {
-          readBytes += bytes - fileReadBytes;
-          fileReadBytes = bytes;
-          reportScanProgress();
-        }
-      : null;
-    const result = await scanChangedFile(index, fileInfo, cached, onFileProgress);
-    if (result.mode === "incremental") {
-      appendScannedFile(index, fileInfo, cached, result);
-      incrementalFiles += 1;
-    } else {
-      replaceScannedFile(index, fileInfo, result);
-      fullRescanFiles += 1;
-    }
-    scannedBytes += result.scanned.scannedBytes;
-    changedFiles += 1;
-    reportScanProgress();
-  });
-  if (pendingFiles.length > 0) reportScanProgress(true);
-
-  if (changedFiles > 0 || deletedFiles > 0) {
-    invalidateUsageCaches(index, { bumpGeneration: true });
-  }
-
-  const fileSummary = fileStatsForSessions(index, sessionsDirs);
-  const sync = {
-    sessionsDirs,
-    sessionsKey: key,
-    files: Number(fileSummary.files || 0),
-    filesWithUsage: Number(fileSummary.filesWithUsage || 0),
-    duplicateTokenEvents: Number(fileSummary.duplicateTokenEvents || 0),
-    parseErrors: Number(fileSummary.parseErrors || 0),
-    rawTokenEvents: Number(fileSummary.rawTokenEvents || 0),
-    indexedEvents: Number(fileSummary.indexedEvents || 0),
-    changedFiles,
-    deletedFiles,
-    cacheFiles: Math.max(0, fileStats.length - changedFiles),
-    incrementalFiles,
-    fullRescanFiles,
-    scannedBytes,
-    scanDurationMs: Date.now() - startedAt,
-    indexRefreshSkipped: false,
-    indexPath: index.dbPath,
-  };
-  index.checkedAt = Date.now();
-  index.lastSync = sync;
-  maybeCollectGarbage(index);
-  return sync;
-}
-
-function isUnchangedFile(cached, fileInfo) {
-  if (
-    !cached ||
-    Number(cached.scanner_version) !== SESSION_SCANNER_VERSION ||
-    Number(cached.size) !== fileInfo.size ||
-    Math.abs(Number(cached.mtime_ms) - fileInfo.mtimeMs) >= 0.001
-  ) {
-    return false;
-  }
-
-  return (
-    String(cached.file_dev || "") === fileInfo.dev &&
-    String(cached.file_ino || "") === fileInfo.ino
-  );
-}
-
-async function scanChangedFile(index, fileInfo, cached, onProgress) {
-  const savedState = parseScannerState(cached);
-  if (await canScanIncrementally(fileInfo, cached, savedState)) {
-    const seenTotals = new Set(
-      index.statements.fileKeys.all(fileInfo.filePath).map((row) => row.total_usage_key),
-    );
-    const scanned = await scanSessionFileRange(fileInfo.filePath, {
-      startOffset: Number(cached.scan_offset || 0),
-      endOffset: fileInfo.size,
-      state: savedState,
-      seenTotals,
-      onProgress,
-    });
-    return {
-      mode: "incremental",
-      scanned,
-      boundaryHash: await boundaryHash(fileInfo.filePath, scanned.processedOffset),
-    };
-  }
-
-  const scanned = await scanSessionFileRange(fileInfo.filePath, { endOffset: fileInfo.size, onProgress });
-  return {
-    mode: "full",
-    scanned,
-    boundaryHash: await boundaryHash(fileInfo.filePath, scanned.processedOffset),
-  };
-}
-
-async function canScanIncrementally(fileInfo, cached, savedState) {
-  if (
-    !cached ||
-    fileInfo.size <= Number(cached.size) ||
-    Number(cached.scanner_version) !== SESSION_SCANNER_VERSION ||
-    !savedState ||
-    String(cached.file_dev || "") !== fileInfo.dev ||
-    String(cached.file_ino || "") !== fileInfo.ino
-  ) {
-    return false;
-  }
-  const scanOffset = Number(cached.scan_offset);
-  if (!Number.isSafeInteger(scanOffset) || scanOffset < 0 || scanOffset > Number(cached.size)) {
-    return false;
-  }
-  return (await boundaryHash(fileInfo.filePath, scanOffset)) === String(cached.boundary_hash || "");
-}
-
-function parseScannerState(cached) {
-  if (!cached?.parser_state_json) return null;
-  try {
-    const state = JSON.parse(cached.parser_state_json);
-    return Number(state.scannerVersion) === SESSION_SCANNER_VERSION ? state : null;
-  } catch {
-    return null;
-  }
-}
-
-async function boundaryHash(filePath, offset) {
-  const end = Math.max(0, Number(offset || 0));
-  const length = Math.min(BOUNDARY_HASH_BYTES, end);
-  const hash = createHash("sha256");
-  if (length === 0) return hash.digest("hex");
-
-  const handle = await open(filePath, "r");
-  try {
-    const buffer = Buffer.allocUnsafe(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, end - length);
-    hash.update(buffer.subarray(0, bytesRead));
-    return hash.digest("hex");
-  } finally {
-    await handle.close();
-  }
-}
-
-function deleteIndexedFile(index, filePath) {
-  const oldKeys = index.statements.fileKeys.all(filePath).map((row) => row.total_usage_key);
-  index.db.exec("BEGIN IMMEDIATE");
-  try {
-    markCanonicalChange(index.db, filePath, oldKeys);
-    index.statements.deleteEvents.run(filePath);
-    index.statements.deleteFile.run(filePath);
-    index.db.exec("COMMIT");
-  } catch (error) {
-    index.db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
-function replaceScannedFile(index, fileInfo, result) {
-  const { scanned, boundaryHash: hash } = result;
-  const oldKeys = index.statements.fileKeys.all(fileInfo.filePath).map((row) => row.total_usage_key);
-  const changedKeys = [...oldKeys, ...scanned.events.map((event) => event.totalUsageKey)];
-  index.db.exec("BEGIN IMMEDIATE");
-  try {
-    markCanonicalChange(index.db, fileInfo.filePath, changedKeys);
-    index.statements.deleteEvents.run(fileInfo.filePath);
-    index.statements.deleteFile.run(fileInfo.filePath);
-    index.statements.insertFile.run(
-      fileInfo.filePath,
-      fileInfo.size,
-      fileInfo.mtimeMs,
-      scanned.events.length,
-      scanned.stats.duplicateTokenEvents,
-      scanned.stats.parseErrors,
-      scanned.stats.tokenEvents,
-      Date.now(),
-      scanned.processedOffset,
-      JSON.stringify(scanned.state),
-      SESSION_SCANNER_VERSION,
-      fileInfo.dev,
-      fileInfo.ino,
-      hash,
-    );
-    insertEvents(index, fileInfo.filePath, scanned.events, 0);
-    index.db.exec("COMMIT");
-  } catch (error) {
-    index.db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
-function appendScannedFile(index, fileInfo, cached, result) {
-  const { scanned, boundaryHash: hash } = result;
-  const eventCount = Number(cached.events_count || 0);
-  index.db.exec("BEGIN IMMEDIATE");
-  try {
-    markCanonicalChange(
-      index.db,
-      fileInfo.filePath,
-      scanned.events.map((event) => event.totalUsageKey),
-    );
-    insertEvents(index, fileInfo.filePath, scanned.events, eventCount);
-    index.statements.updateFile.run(
-      fileInfo.size,
-      fileInfo.mtimeMs,
-      eventCount + scanned.events.length,
-      Number(cached.duplicate_token_events || 0) + scanned.stats.duplicateTokenEvents,
-      Number(cached.parse_errors || 0) + scanned.stats.parseErrors,
-      Number(cached.raw_token_events || 0) + scanned.stats.tokenEvents,
-      Date.now(),
-      scanned.processedOffset,
-      JSON.stringify(scanned.state),
-      SESSION_SCANNER_VERSION,
-      fileInfo.dev,
-      fileInfo.ino,
-      hash,
-      fileInfo.filePath,
-    );
-    index.db.exec("COMMIT");
-  } catch (error) {
-    index.db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
-function insertEvents(index, filePath, events, startIndex) {
-  events.forEach((event, relativeIndex) => {
-    const usage = event.usage || {};
-    index.statements.insertEvent.run(
-      filePath,
-      startIndex + relativeIndex,
-      event.timestampMs ?? null,
-      event.hasEventTimestamp ? 1 : 0,
-      event.sessionCreatedAtMs ?? null,
-      event.sessionId || "",
-      event.totalUsageKey || "",
-      event.cwd || "(unknown cwd)",
-      event.model || "(unknown model)",
-      usage.input_tokens || 0,
-      usage.cached_input_tokens || 0,
-      usage.cache_write_input_tokens || 0,
-      usage.output_tokens || 0,
-      usage.reasoning_output_tokens || 0,
-      usage.total_tokens || 0,
-    );
-  });
 }
 
 function groupedRowsFromIndex(index, options) {
@@ -992,6 +708,18 @@ function migrateUsageIndexSchema(db) {
     addColumn(db, fileColumns, "boundary_hash", "TEXT");
     db.exec(CANONICAL_SCHEMA_SQL);
     db.exec(`
+      CREATE TABLE IF NOT EXISTS index_publication (
+        id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL,
+        published_at_ms INTEGER, has_snapshot INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO index_publication
+        SELECT 1, 0, NULL, EXISTS(SELECT 1 FROM files);
+      CREATE TABLE IF NOT EXISTS scan_failures (
+        path TEXT PRIMARY KEY, signature TEXT, error_code TEXT NOT NULL,
+        message TEXT NOT NULL, attempted_at_ms INTEGER NOT NULL, retained_paths_json TEXT NOT NULL
+      );
+    `);
+    db.exec(`
       CREATE INDEX IF NOT EXISTS idx_events_canonical_source_time_order
         ON events(total_usage_key, has_event_timestamp DESC, timestamp_ms IS NULL, timestamp_ms, file_path COLLATE BINARY, event_index);
       DROP INDEX IF EXISTS idx_events_canonical_time_order;
@@ -1066,40 +794,6 @@ function fileStatsForSessions(index, sessionsDirs) {
     .get(...filter.params);
 }
 
-async function collectJsonlFiles(sessionsDirs) {
-  const files = [];
-  for (const sessionsDir of sessionsDirs) {
-    const dirFiles = await findJsonlFiles(sessionsDir);
-    files.push(...dirFiles);
-  }
-  return files;
-}
-
-async function mapLimit(items, limit, mapper) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await mapper(items[index], index);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
 function sessionsKey(sessionsDirs) {
   return sessionsDirs.join("\n");
-}
-
-function filePathInSessions(filePath, sessionsDirs) {
-  const resolved = path.resolve(filePath);
-  return sessionsDirs.some((dir) => resolved === dir || resolved.startsWith(`${dir}${path.sep}`));
-}
-
-function maybeCollectGarbage(index) {
-  if (index.enableGc && typeof globalThis.gc === "function") {
-    globalThis.gc();
-  }
 }
