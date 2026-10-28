@@ -81,7 +81,8 @@ export function mergePricingCatalogs(seedInput, runtimeInput) {
         (candidate) =>
           !candidate.provisional &&
           !candidate.supersededBy &&
-          (ratesEqual(candidate, runtimeVersion) || restoresMissingLongContext(candidate, runtimeVersion)) &&
+          (ratesEqual(candidate, runtimeVersion) || restoresMissingLongContext(candidate, runtimeVersion) ||
+            restoresMissingCacheWrite(candidate, runtimeVersion)) &&
           Date.parse(candidate.effectiveFrom || 0) <= Date.parse(runtimeVersion.effectiveFrom || 0),
       );
       if (runtimeVersion.provisional && runtimeVersion.effectiveFrom && formal) {
@@ -383,6 +384,22 @@ function restoresMissingLongContext(formal, observed) {
       (field) => nullableNumber(formal[field]) === nullableNumber(observed[field]),
     ),
   );
+}
+
+function restoresMissingCacheWrite(formal, observed) {
+  // Only restore absent fields from identical source content. Any other rate
+  // difference remains independent price history, including a different tier.
+  if (!formal.contentHash || formal.contentHash !== observed.contentHash || !formal.effectiveFrom ||
+      formal.cacheWrite == null || observed.cacheWrite != null || observed.longContext?.cacheWrite != null) {
+    return false;
+  }
+  return ratesEqual(formal, {
+    ...observed,
+    cacheWrite: formal.cacheWrite,
+    ...(observed.longContext ? {
+      longContext: { ...observed.longContext, cacheWrite: formal.longContext?.cacheWrite },
+    } : {}),
+  });
 }
 
 export function estimateUsageCostWithPrice(price, usage) {

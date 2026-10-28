@@ -3,8 +3,8 @@
   "currency": "USD",
   "basis": "OpenAI API Standard text-token pricing per 1M tokens",
   "estimateLabel": "Event-time Standard API-equivalent estimate for local Codex token logs",
-  "checkedAt": "2026-10-22T02:32:36.454Z",
-  "updatedAt": "2026-10-22",
+  "checkedAt": "2026-10-28T09:47:14.293Z",
+  "updatedAt": "2026-10-28",
   "sourceUrls": [
     "https://developers.openai.com/api/docs/models/",
     "https://developers.openai.com/api/docs/pricing",
@@ -637,6 +637,32 @@
           "sourceUrl": "https://developers.openai.com/api/docs/changelog",
           "observedAt": "2026-10-22T02:32:36.454Z",
           "contentHash": "acfe91d19882aaf7bb52877898684614035a947de02f2955c9de905a7efb1362",
+          "evidenceLevel": "manually-verified-official"
+        }
+      ]
+    },
+    "gpt-6.1-terra": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6.1-terra.md",
+      "versions": [
+        {
+          "input": 1,
+          "cachedInput": 0.05,
+          "cacheWrite": 1.25,
+          "output": 5,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 2,
+            "output": 7.5,
+            "cachedInput": 0.1,
+            "cacheWrite": 2.5
+          },
+          "id": "gpt-6.1-terra-2026-10-26",
+          "effectiveFrom": "2026-10-26T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "sourceUrl": "https://developers.openai.com/api/docs/changelog",
+          "observedAt": "2026-10-28T09:47:14.293Z",
+          "contentHash": "cd34faa8904d85961ab5fe270f079b8be45a9c876af6c809b38b2c069f687a7a",
           "evidenceLevel": "manually-verified-official"
         }
       ]

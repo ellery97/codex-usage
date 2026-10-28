@@ -15,6 +15,11 @@ const JULY_30 = Date.parse("2026-07-30T00:00:00.000Z");
 const SEPTEMBER_3 = Date.parse("2026-09-03T00:00:00.000Z");
 const GPT6_PRICES = [
   {
+    model: "gpt-6.1-terra", date: "2026-10-26",
+    rates: [1, 0.05, 1.25, 5], longRates: [2, 0.1, 2.5, 7.5],
+    costs: [0.689499, 0.6895, 1.129002],
+  },
+  {
     model: "gpt-6-sol", date: "2026-09-22",
     rates: [2, 0.2, 2.5, 10], longRates: [4, 0.4, 5, 15],
     costs: [1.388998, 1.389, 2.278004],
@@ -36,7 +41,7 @@ for (const { model, date, rates, longRates, costs } of GPT6_PRICES) {
     const launch = Date.parse(`${date}T00:00:00.000Z`);
     assert.equal(priceForModel(model, launch - 1), null);
     assert.equal(costStatsForUsage(model, { input_tokens: 1 }, launch - 1).unpriced_requests, 1);
-    for (const timestamp of [launch, launch + 1, Date.parse("2026-10-22T00:00:00Z")]) {
+    for (const timestamp of [launch, launch + 1, Date.parse("2026-10-28T00:00:00Z")]) {
       const price = priceForModel(model, timestamp);
       assert.equal(price.versionId, `${model}-${date}`);
       assert.equal(price.provisional, false);
@@ -63,7 +68,7 @@ for (const { model, date, rates, longRates, costs } of GPT6_PRICES) {
 }
 
 test("does not invent generic GPT-6 or GPT-6.1 aliases", () => {
-  const now = Date.parse("2026-10-22T00:00:00Z");
+  const now = Date.parse("2026-10-28T00:00:00Z");
   assert.equal(priceForModel("gpt-6", now), null);
   assert.equal(priceForModel("gpt-6.1", now), null);
 });
@@ -202,7 +207,7 @@ test("exposes event-time pricing metadata and compatibility updatedAt", () => {
   assert.equal(metadata.mode, "event-time");
   assert.equal(metadata.refreshStatus, "cached");
   assert.equal(metadata.updatedAt, metadata.checkedAt.slice(0, 10));
-  assert.equal(metadata.latestEffectiveFrom, "2026-09-29T00:00:00.000Z");
+  assert.equal(metadata.latestEffectiveFrom, "2026-10-26T00:00:00.000Z");
   assert.equal(metadata.longContextThresholdTokens, 272_000);
   assert.equal(metadata.assumedModels[0].assumedModel, "gpt-5.6-luna");
   assert.equal(metadata.assumedModels[0].routes.length, 2);

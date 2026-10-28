@@ -388,7 +388,8 @@ function readTokenPriceRows(section) {
       .map((cell) => cell.trim())
       .filter(Boolean);
     if (cells.length < 2 || cells.every((cell) => /^:?-+:?$/.test(cell))) continue;
-    const key = cells[0].toLowerCase().replace(/[^a-z]/g, "");
+    const rawKey = cells[0].toLowerCase().replace(/[^a-z]/g, "");
+    const key = { cachewrites: "cachewrite", cachedwrites: "cachedwrite" }[rawKey] || rawKey;
     if (!["input", "cachedinput", "cachewrite", "cachedwrite", "output"].includes(key)) continue;
     if (!cells.some((cell) => /(?:1\s*M|1,?000,?000)\s+tokens?/i.test(cell))) continue;
     const priceCell = cells.slice(1).find((cell) => /\$\s*[0-9]/.test(cell));
