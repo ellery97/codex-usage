@@ -143,16 +143,33 @@
           <small id="uncachedInput">-- 未缓存输入</small>
         </article>
         <article class="metric-card cost-card accent-rose">
-          <span>参考金额（基线）</span>
+          <span>API 参考金额（基线）</span>
           <strong id="estimatedCost">--</strong>
           <div class="cost-breakdown" aria-label="金额构成">
-            <span><i>官方金额</i><b id="officialCost">--</b></span>
-            <span id="assumedCostRow"><i>假设增量</i><b id="assumedCost">--</b></span>
+            <span><i>按公开单价估算</i><b id="officialCost">--</b></span>
+            <p id="provisionalCostRow" class="cost-subset" hidden>其中，历史生效日期待确认：<b id="provisionalCost">--</b>（已包含）</p>
+            <span id="assumedCostRow" hidden><i>无独立定价部分的参考估算<br /><small>已计入基线总额</small></i><b id="assumedCost">--</b></span>
           </div>
           <small id="costSub" class="cost-footnote">按事件发生时 Standard API 价格估算</small>
           <small id="pricingWarning" class="pricing-warning" hidden></small>
         </article>
       </section>
+
+      <details id="costDetails" class="panel cost-details">
+        <summary>查看估算依据</summary>
+        <div class="cost-details-body">
+          <p>基线总额 = 按公开单价估算 + 无独立定价部分的参考估算。</p>
+          <p id="costEquation" class="cost-equation">--</p>
+          <p>按事件发生时的 Standard API 文本 Token 单价换算；这些金额用于参考，不代表 ChatGPT 订阅账单、Codex credits 或实际扣费。未计价 Token 不包含在金额中。</p>
+          <p id="provisionalExplanation" hidden></p>
+          <div id="assumedBlock" class="model-price-block" hidden>
+            <h3>无独立定价部分的估算方案</h3>
+            <p>以下按其他模型的公开单价估算。基线方案已计入上方总额；另一方案仅供比较，两者不叠加，也不代表实际费用的上下限。</p>
+            <p id="alternativeCost" class="cost-equation"></p>
+            <div id="assumedModelList" class="model-price-list assumed-list"></div>
+          </div>
+        </div>
+      </details>
 
       <section class="analytics-grid">
         <article class="panel wide">
@@ -205,13 +222,6 @@
             <span><small>文件数</small><strong id="fileCount">--</strong></span>
             <span><small>全局去重</small><strong id="globalDedupe">--</strong></span>
           </div>
-          <div id="assumedBlock" class="model-price-block" hidden>
-            <div class="mini-heading">
-              <strong>假设计价</strong>
-              <span>参考估算，非官方价格</span>
-            </div>
-            <div id="assumedModelList" class="model-price-list assumed-list"></div>
-          </div>
           <div id="unpricedBlock" class="model-price-block" hidden>
             <div class="mini-heading">
               <strong>未计价模型</strong>
@@ -248,8 +258,8 @@
                   <th>缓存写入</th>
                   <th>输出</th>
                   <th>推理</th>
-                  <th>官方金额</th>
-                  <th>参考金额</th>
+                  <th>公开单价估算</th>
+                  <th>参考金额（基线）</th>
                   <th>缓存率</th>
                 </tr>
               </thead>

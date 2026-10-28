@@ -324,9 +324,9 @@ event is in range, so they exclude it and report `stats.excludedUnknownTimestamp
 | `cache_hit_ratio` | `cached_input_tokens / input_tokens` |
 | `estimated_cost_usd` | Event-time USD estimate for models with published prices only |
 | `assumed_cost_usd` | Explicitly labelled assumption baseline |
-| `assumed_upper_bound_cost_usd` | Assumption upper bound |
-| `reference_total_cost_usd` | Official amount plus assumption baseline |
-| `reference_total_upper_bound_cost_usd` | Official amount plus assumption upper bound |
+| `assumed_upper_bound_cost_usd` | Alternative assumed amount; field name retained, not a guaranteed billing cap |
+| `reference_total_cost_usd` | Published-rate estimate plus assumption baseline |
+| `reference_total_upper_bound_cost_usd` | Published-rate estimate plus alternative assumed amount |
 | `priced_requests` | Requests matched to the price table |
 | `assumed_requests` | Requests using an explicitly labelled route assumption |
 | `assumed_total_tokens` | Tokens using an explicitly labelled route assumption |
@@ -334,7 +334,7 @@ event is in range, so they exclude it and report `stats.excludedUnknownTimestamp
 | `unpriced_total_tokens` | Tokens with neither a published price nor an assumption route |
 | `provisional_priced_requests` | Requests priced with a provisional official-price baseline |
 | `provisional_priced_total_tokens` | Tokens priced with a provisional official-price baseline |
-| `provisional_estimated_cost_usd` | Portion of official cost coming from provisional versions |
+| `provisional_estimated_cost_usd` | Portion of the published-rate estimate from provisional versions, already included in the total |
 | `requests` | Number of token events, approximately the recorded request count |
 | `sessions` | Number of Codex sessions included |
 
@@ -347,6 +347,17 @@ selects the newest version whose effective time is not later than the event's UT
 event exactly on a boundary uses the new version. A truly timestamp-less event cannot safely select
 a historical price version, so it remains in token totals but is marked unpriced. Legacy prices
 without an authoritative effective date remain visible as `provisional` historical baselines.
+
+The Web cost card shows the baseline API reference total: the published-rate estimate plus the
+reference estimate for models without independent pricing. The latter appears as `+amount`, explicitly
+marked as included in the baseline total. The indented amount with an unconfirmed historical effective
+date is a subset of the published-rate estimate, already included in the total; do not add it again.
+That subset may change when authoritative effective dates become available.
+
+Expand “查看估算依据” (Estimate details) below the cost cards to see the calculation, historical-date
+explanation, and each period's reference models and scenario amounts. The alternative total replaces
+the assumed baseline component; the two scenarios are not additive and do not establish actual billing
+bounds. These display changes preserve existing API fields and calculations, with no index rebuild.
 
 The built-in catalog includes the following GPT-6 / 6.1 history. Effective dates follow the release
 dates in the [official changelog](https://developers.openai.com/api/docs/changelog), recorded at UTC
@@ -384,14 +395,14 @@ corrupt runtime cache is first preserved as `.corrupt-<timestamp>` before fallin
 catalog; an invalid built-in catalog fails startup explicitly.
 
 ```text
-official cost =
+published-rate estimate =
   (ordinary input * input rate
    + cache reads * cached-input rate
    + cache writes * cache-write rate
    + output * output rate) / 1,000,000
 
-reference baseline = official cost + assumed baseline
-reference upper bound = official cost + assumed upper bound
+reference baseline = published-rate estimate + assumed baseline
+alternative total = published-rate estimate + alternative assumed amount
 ```
 
 These values are event-time Standard API-equivalent references, not ChatGPT subscription charges,
@@ -401,8 +412,8 @@ account-specific discounts.
 `codex-auto-review` has no independently published price and never contributes to
 `estimated_cost_usd`. Its labelled reference route uses GPT-5.4 Thinking with low reasoning as the
 baseline from 2026-04-23, then GPT-5.6 Luna from 2026-07-30 with lower evidence; GPT-5.6 Sol is the
-upper bound in both periods. Cross-period results expose each route separately in
-`assumedModels[].routes`.
+alternative reference in both periods (retaining the `upperBoundModel` field name). Cross-period
+results expose each route separately in `assumedModels[].routes`.
 
 Refresh the runtime catalog or inspect changes without writing:
 

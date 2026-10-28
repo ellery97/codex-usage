@@ -13,7 +13,10 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 function dashboard() {
   const elements = new Map(), requests = [], timers = new Map();
   let nextTimer = 0;
-  const canvas = new Proxy({}, {
+  const canvas = new Proxy({
+    createLinearGradient: () => ({ addColorStop() {} }),
+    measureText: (value) => ({ width: String(value).length * 7 }),
+  }, {
     get: (target, key) => target[key] || (() => {}),
     set: (target, key, value) => { target[key] = value; return true; },
   });
@@ -214,4 +217,116 @@ test("a current status request failure keeps the incomplete warning and offers r
   assert.equal(app.element("refreshButton").disabled, false);
   assert.equal(app.element("errorToast").textContent, "Synthetic status failure");
   assert.equal(app.polls().length, 0);
+});
+
+// Synthetic amounts distinguish the included subset from additive components.
+function costUsage(totals = {}, assumedModels = []) {
+  return {
+    ...usage(status(1, false)),
+    totals, assumedModels,
+    rows: [{ key: "synthetic", ...totals }],
+  };
+}
+
+const mixedCosts = {
+  estimated_cost_usd: 100,
+  provisional_priced_requests: 3,
+  provisional_estimated_cost_usd: 40,
+  assumed_requests: 2,
+  assumed_cost_usd: 2,
+  assumed_upper_bound_cost_usd: 10,
+  reference_total_cost_usd: 102,
+  reference_total_upper_bound_cost_usd: 110,
+};
+
+async function bootCosts(totals = mixedCosts, models = []) {
+  const app = dashboard();
+  app.request("/api/usage?").respond(costUsage(totals, models));
+  await flush();
+  assert.equal(app.element("errorToast").textContent, "");
+  return app;
+}
+
+test("cost cards distinguish an included provisional subset from the assumed baseline", async () => {
+  const app = await bootCosts();
+  assert.equal(app.element("estimatedCost").textContent, "$102.00");
+  assert.equal(app.element("officialCost").textContent, "$100.00");
+  assert.equal(app.element("provisionalCostRow").hidden, false);
+  assert.equal(app.element("provisionalCost").textContent, "$40.00");
+  assert.equal(app.element("assumedCostRow").hidden, false);
+  assert.equal(app.element("assumedCost").textContent, "+$2.00");
+  assert.equal(app.element("costEquation").textContent, "$102.00 ≈ $100.00 + $2.00（显示值已四舍五入）");
+  assert.match(app.element("provisionalExplanation").textContent, /3 次请求.*\$40\.00 已包含.*无需再次相加/);
+  assert.match(app.element("alternativeCost").textContent, /\$10\.00.*总额为 \$110\.00.*不额外叠加/);
+  assert.doesNotMatch(app.element("costSub").textContent, /provisional|\$40|\$10/);
+  assert.doesNotMatch(app.element("usageTable").innerHTML, /官方金额|\$110|–/);
+  assert.match(app.element("usageTable").innerHTML, /历史生效日期待确认 \$40\.00（已包含）/);
+});
+
+for (const [name, totals, hasProvisional, hasAssumed] of [
+  ["published rates only", { estimated_cost_usd: 5, reference_total_cost_usd: 5 }, false, false],
+  ["provisional only", { estimated_cost_usd: 5, reference_total_cost_usd: 5, provisional_priced_requests: 1, provisional_estimated_cost_usd: 5 }, true, false],
+  ["assumed only", { assumed_requests: 1, assumed_cost_usd: 2, assumed_upper_bound_cost_usd: 2, reference_total_cost_usd: 2, reference_total_upper_bound_cost_usd: 2 }, false, true],
+  ["zero cost requests", { assumed_requests: 1, provisional_priced_requests: 1 }, true, true],
+  ["empty result", {}, false, false],
+  ["unpriced tokens", { unpriced_total_tokens: 1200 }, false, false],
+]) {
+  test(`cost explanations update after changing filters to ${name}`, async () => {
+    const app = await bootCosts(mixedCosts, [{ model: "old-model", assumedModel: "old-baseline" }]);
+    app.element("costDetails").open = true;
+    app.changeSource("wsl");
+    app.request("/api/usage?").respond(costUsage(totals));
+    await flush();
+    assert.equal(app.element("errorToast").textContent, "");
+    assert.equal(app.element("provisionalCostRow").hidden, !hasProvisional);
+    assert.equal(app.element("provisionalExplanation").hidden, !hasProvisional);
+    assert.equal(app.element("assumedCostRow").hidden, !hasAssumed);
+    assert.equal(app.element("costDetails").open, true, "Refreshing data preserves the user's expanded state");
+    assert.equal(app.element("assumedModelList").innerHTML, "");
+    if (!hasProvisional) assert.equal(app.element("provisionalExplanation").textContent, "");
+    if (!hasAssumed) assert.equal(app.element("alternativeCost").textContent, "");
+    assert.doesNotMatch(app.element("costEquation").textContent, /\$102|\$100|\$40/);
+    if (totals.unpriced_total_tokens) assert.match(app.element("costSub").textContent, /1\.2K Token 未计价/);
+  });
+}
+
+test("estimate details retain every period and associate each scenario with its model and amount", async () => {
+  const models = [{
+    model: "synthetic-review",
+    routes: [
+      { assumedModel: "baseline-a", upperBoundModel: "comparison-a", effectiveFrom: "2026-04-01T00:00:00Z", assumed_cost_usd: 1.25, assumed_upper_bound_cost_usd: 6 },
+      { assumedModel: "baseline-b", upperBoundModel: "comparison-b", effectiveFrom: "2026-07-01T00:00:00Z", assumed_cost_usd: 0.75, assumed_upper_bound_cost_usd: 4 },
+    ],
+  }];
+  const app = await bootCosts(mixedCosts, models);
+  const html = app.element("assumedModelList").innerHTML;
+  assert.equal(app.element("assumedBlock").hidden, false);
+  assert.match(html, /方案起始 2026-04-01 UTC/);
+  assert.match(html, /方案起始 2026-07-01 UTC/);
+  assert.match(html, /基线方案（已计入）.*baseline-a.*\$1\.25/);
+  assert.match(html, /另一参考方案.*comparison-a.*\$6\.00/);
+  assert.match(html, /基线方案（已计入）.*baseline-b.*\$0\.7500/);
+  assert.match(html, /另一参考方案.*comparison-b.*\$4\.00/);
+  assert.doesNotMatch(html, /上界|–/);
+});
+
+test("cost explanations stay hidden while the first index is being built", async () => {
+  const app = dashboard();
+  app.request("/api/usage?").respond({
+    ...costUsage(mixedCosts), index: { ...status(0, true), hasSnapshot: false },
+  });
+  await flush();
+  assert.equal(app.element("estimatedCost").textContent, "--");
+  assert.equal(app.element("costDetails").hidden, true);
+  assert.equal(app.element("provisionalCostRow").hidden, true);
+  assert.equal(app.element("assumedCostRow").hidden, true);
+  const polling = app.firePoll();
+  app.request("/api/index/status?").respond(status(1, false));
+  await flush();
+  app.request("/api/usage?").respond(costUsage(mixedCosts));
+  await polling;
+  assert.equal(app.element("estimatedCost").textContent, "$102.00");
+  assert.equal(app.element("costDetails").hidden, false);
+  assert.equal(app.element("provisionalCostRow").hidden, false);
+  assert.equal(app.element("assumedCostRow").hidden, false);
 });

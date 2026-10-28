@@ -52,8 +52,14 @@ const text = {
   uncachedInput: document.getElementById("uncachedInput"),
   estimatedCost: document.getElementById("estimatedCost"),
   officialCost: document.getElementById("officialCost"),
+  provisionalCostRow: document.getElementById("provisionalCostRow"),
+  provisionalCost: document.getElementById("provisionalCost"),
   assumedCostRow: document.getElementById("assumedCostRow"),
   assumedCost: document.getElementById("assumedCost"),
+  costDetails: document.getElementById("costDetails"),
+  costEquation: document.getElementById("costEquation"),
+  provisionalExplanation: document.getElementById("provisionalExplanation"),
+  alternativeCost: document.getElementById("alternativeCost"),
   costSub: document.getElementById("costSub"),
   pricingWarning: document.getElementById("pricingWarning"),
   mainChartTitle: document.getElementById("mainChartTitle"),
@@ -279,6 +285,9 @@ function updateIndexStatus(status) {
   if (!status.hasSnapshot && state.data) {
     for (const key of ["totalTokens", "inputTokens", "outputTokens", "cacheRatio", "estimatedCost", "officialCost"] ) text[key].textContent = "--";
     text.totalSub.textContent = "正在建立索引";
+    text.provisionalCostRow.hidden = true;
+    text.assumedCostRow.hidden = true;
+    text.costDetails.hidden = true;
   }
   scheduleIndexPoll();
 }
@@ -375,16 +384,21 @@ function render() {
   text.cacheRatio.textContent = percent(totals.cache_hit_ratio);
   text.uncachedInput.textContent = `${compactNumber(totals.uncached_input_tokens)} 普通输入`;
   text.estimatedCost.textContent = money(totals.reference_total_cost_usd);
-  text.estimatedCost.title = `参考区间 ${moneyRange(
-    totals.reference_total_cost_usd,
-    totals.reference_total_upper_bound_cost_usd,
-  )}`;
   text.officialCost.textContent = money(totals.estimated_cost_usd);
+  const hasProvisional = Number(totals.provisional_priced_requests || 0) > 0;
+  text.provisionalCostRow.hidden = !hasProvisional;
+  text.provisionalCost.textContent = money(totals.provisional_estimated_cost_usd);
   text.assumedCostRow.hidden = Number(totals.assumed_requests || 0) === 0;
-  text.assumedCost.textContent = moneyRange(
-    totals.assumed_cost_usd,
-    totals.assumed_upper_bound_cost_usd,
-  );
+  text.assumedCost.textContent = `+${money(totals.assumed_cost_usd)}`;
+  text.costDetails.hidden = false;
+  text.costEquation.textContent = `${money(totals.reference_total_cost_usd)} ≈ ${money(totals.estimated_cost_usd)} + ${money(totals.assumed_cost_usd)}（显示值已四舍五入）`;
+  text.provisionalExplanation.hidden = !hasProvisional;
+  text.provisionalExplanation.textContent = hasProvisional
+    ? `${fullNumber(totals.provisional_priced_requests)} 次请求使用了历史生效日期尚未确认的公开单价。对应 ${money(totals.provisional_estimated_cost_usd)} 已包含在“按公开单价估算”和基线总额中，无需再次相加；待生效日期核实后，这部分估算可能调整。`
+    : "";
+  text.alternativeCost.textContent = Number(totals.assumed_requests || 0) > 0
+    ? `若采用另一方案：无独立定价部分为 ${money(totals.assumed_upper_bound_cost_usd)}，对应总额为 ${money(totals.reference_total_upper_bound_cost_usd)}（替换基线部分，不额外叠加）。`
+    : "";
   text.costSub.textContent = costFootnote(totals, data.pricing);
   renderPricingWarning(data.pricing);
 
@@ -418,11 +432,6 @@ function costFootnote(totals, pricing) {
     ? `${pricing.checkedAt.slice(5, 16).replace("T", " ")} UTC`
     : "未校验";
   const parts = [`按事件发生时 Standard API 价格估算`, `${status} ${checkedAt}`];
-  if (Number(totals.provisional_priced_requests || 0) > 0) {
-    parts.push(
-      `${fullNumber(totals.provisional_priced_requests)} 次 provisional · ${money(totals.provisional_estimated_cost_usd)}`,
-    );
-  }
   if (Number(totals.unpriced_total_tokens || 0) > 0) {
     parts.push(`${compactNumber(totals.unpriced_total_tokens)} Token 未计价`);
   }
@@ -436,14 +445,6 @@ function renderPricingWarning(pricing) {
     ? "官方价格刷新未完整成功，当前使用最近一次已验证的本地目录。"
     : "";
   text.pricingWarning.title = pricing?.warning || "";
-}
-
-function moneyRange(lower, upper) {
-  const lowerValue = Number(lower || 0);
-  const upperValue = Number(upper || 0);
-  return Math.abs(lowerValue - upperValue) < 1e-9
-    ? money(lowerValue)
-    : `${money(lowerValue)}–${money(upperValue)}`;
 }
 
 function renderMainLegend(group, sort) {
@@ -560,25 +561,22 @@ function renderAssumedModels(models) {
     text.assumedModelList.innerHTML = "";
     return;
   }
-  const routes = models
-    .flatMap((row) =>
-      (row.routes?.length ? row.routes : [row]).map((route) => ({ ...route, model: row.model })),
-    )
-    .slice(0, 12);
+  const routes = models.flatMap((row) =>
+    (row.routes?.length ? row.routes : [row]).map((route) => ({ ...route, model: row.model })),
+  );
   text.assumedModelList.innerHTML = routes
     .map(
       (row) => `
         <div class="model-price-card" title="${escapeHtml(row.label || "参考估算")}">
           <div class="model-price-route">
             <b>${escapeHtml(row.model)}</b>
-            <em>${escapeHtml(row.effectiveFrom ? `自 ${row.effectiveFrom.slice(0, 10)}` : "历史基线")}</em>
+            <em>${escapeHtml(row.effectiveFrom ? `方案起始 ${row.effectiveFrom.slice(0, 10)} UTC` : "历史基线")}</em>
           </div>
           <div class="assumption-models">
-            <span><i>基线</i><b>${escapeHtml(row.assumedModel || "--")}</b></span>
-            <span><i>上界</i><b>${escapeHtml(row.upperBoundModel || "--")}</b></span>
+            <span><i>基线方案（已计入）</i><b>${escapeHtml(row.assumedModel || "--")}</b><strong>${money(row.assumed_cost_usd)}</strong></span>
+            <span><i>另一参考方案</i><b>${escapeHtml(row.upperBoundModel || "--")}</b><strong>${money(row.assumed_upper_bound_cost_usd)}</strong></span>
           </div>
           <div class="model-price-estimate">
-            <strong>${moneyRange(row.assumed_cost_usd, row.assumed_upper_bound_cost_usd)}</strong>
             <em>${fullNumber(row.total_tokens)} Token · ${fullNumber(row.requests)} 次${row.evidenceLevel ? ` · ${escapeHtml(evidenceLabel(row.evidenceLevel))}` : ""}</em>
           </div>
         </div>`,
@@ -630,13 +628,14 @@ function escapeHtml(value) {
 }
 
 function costTitle(row) {
-  const parts = [`官方金额 ${money(row.estimated_cost_usd)}`];
-  if (Number(row.assumed_requests || 0) > 0) {
-    parts.push(`假设金额 ${money(row.assumed_cost_usd)}–${money(row.assumed_upper_bound_cost_usd)}`);
+  const parts = [`按公开单价估算 ${money(row.estimated_cost_usd)}`];
+  if (Number(row.provisional_priced_requests || 0) > 0) {
+    parts.push(`其中历史生效日期待确认 ${money(row.provisional_estimated_cost_usd)}（已包含）`);
   }
-  parts.push(
-    `参考合计 ${money(row.reference_total_cost_usd)}–${money(row.reference_total_upper_bound_cost_usd)}`,
-  );
+  if (Number(row.assumed_requests || 0) > 0) {
+    parts.push(`无独立定价部分的参考估算 ${money(row.assumed_cost_usd)}（已计入基线总额）`);
+  }
+  parts.push(`参考金额（基线）${money(row.reference_total_cost_usd)}`);
   if (Number(row.unpriced_total_tokens || 0) > 0) {
     parts.push(`${fullNumber(row.unpriced_total_tokens)} Token 未计价`);
   }
@@ -1033,8 +1032,8 @@ function showChartTooltip(point, rect) {
     <span>缓存写入 <em>${fullNumber(row.cache_write_input_tokens)}</em></span>
     <span>输出 <em>${fullNumber(row.output_tokens)}</em></span>
     <span>推理 <em>${fullNumber(row.reasoning_output_tokens)}</em></span>
-    <span>参考金额 <em>${money(row.reference_total_cost_usd)}</em></span>
-    <span>官方金额 <em>${money(row.estimated_cost_usd)}</em></span>
+    <span>参考金额（基线） <em>${money(row.reference_total_cost_usd)}</em></span>
+    <span>公开单价估算 <em>${money(row.estimated_cost_usd)}</em></span>
     <span>缓存率 <em>${percent(row.cache_hit_ratio)}</em></span>
   `;
   els.chartTooltip.style.left = `${clamp(point.x, 104, rect.width - 104)}px`;

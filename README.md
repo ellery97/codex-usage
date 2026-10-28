@@ -45,7 +45,7 @@ Web 默认使用本地价格；CLI 默认联网校验价格，Web 也可显式�
 - 提供本地 Web 页面，展示汇总卡片、Token 用量趋势、Token 构成、索引刷新状态和明细表。
 - Web 服务使用 SQLite 持久索引；普通追加只读取新增字节，文件被替换或改写时才回退为完整重扫。
 - 全局去重代表事件按数据源范围持久化，筛选变化复用已计价切片和进程内查询缓存。
-- 按事件发生时间选择 OpenAI API Standard 价格版本，并区分官方金额、假设金额和未计价模型。
+- 按事件发生时间选择 OpenAI API Standard 价格版本，并区分公开单价估算、无独立定价部分的参考估算和未计价模型。
 - 真正缺失时间戳的事件在全量统计中仍会保留并计为未计价；带时间边界的查询会显式报告被排除数量。
 - 默认自动发现并合并 WSL/Linux 与 Windows 两侧的当前会话和归档会话目录。
 - 默认启用全局去重，减少旧会话内容被复制进后续 rollout 文件后造成的重复计数。
@@ -321,9 +321,9 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | `cache_hit_ratio` | 缓存命中率，等于 `cached_input_tokens / input_tokens` |
 | `estimated_cost_usd` | 仅包含有公开价格模型的事件时点美元估算 |
 | `assumed_cost_usd` | 明确标注的假设计价基线 |
-| `assumed_upper_bound_cost_usd` | 假设计价上界 |
-| `reference_total_cost_usd` | 官方金额加假设基线 |
-| `reference_total_upper_bound_cost_usd` | 官方金额加假设上界 |
+| `assumed_upper_bound_cost_usd` | 另一参考方案的假设金额，字段名保留，不保证实际费用上限 |
+| `reference_total_cost_usd` | 公开单价估算加假设基线 |
+| `reference_total_upper_bound_cost_usd` | 公开单价估算加另一方案的假设金额 |
 | `priced_requests` | 已匹配到价格表的请求数 |
 | `assumed_requests` | 使用明确假设路由的请求数 |
 | `assumed_total_tokens` | 使用明确假设路由的 token 数 |
@@ -331,7 +331,7 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 | `unpriced_total_tokens` | 既无官方价格也无假设路由的 token 数 |
 | `provisional_priced_requests` | 使用 provisional 官方价格的请求数 |
 | `provisional_priced_total_tokens` | 使用 provisional 官方价格的 token 数 |
-| `provisional_estimated_cost_usd` | 官方金额中来自 provisional 版本的部分 |
+| `provisional_estimated_cost_usd` | 公开单价估算中来自 provisional 版本的部分，已包含在总额中 |
 | `requests` | token 事件数量，可近似理解为记录到 token 用量的请求数 |
 | `sessions` | 参与统计的 Codex 会话数 |
 
@@ -340,6 +340,10 @@ node ./bin/codex-token-usage.mjs --dedupe-scope file
 ## 金额估算口径
 
 金额来自版本化价格目录，口径是 OpenAI API Standard 文本 Token 价格。每条有时间戳的事件按自身 UTC 时间选择不晚于它的最新有效版本；恰好位于价格边界时使用新版本。真正没有时间戳的事件无法安全选择历史价格版本，因此会保留在 Token 统计中但标记为未计价。没有权威生效日的旧价格作为 `provisional` 历史基线，不会冒充正式变价日期。
+
+Web 金额卡片显示“API 参考金额（基线）”，由“按公开单价估算”和“无独立定价部分的参考估算”相加得到。后者以 `+金额` 显示，并注明已计入基线总额。“其中，历史生效日期待确认”是公开单价估算中的子集，已包含在总额中，无需再次相加；它表示历史生效日期缺少权威依据，核实后估算可能调整。
+
+展开金额卡片下方的“查看估算依据”，可查看计算关系、历史日期说明，以及各时期采用的参考模型、基线金额和另一方案金额。另一方案的总额通过替换基线假设部分计算，两种方案不叠加，也不构成实际费用的上下限。这些展示调整保留原有 API 字段和金额计算，无需重建索引。
 
 内置目录包含以下 GPT-6 / 6.1 历史价格。生效日采用[官方更新日志](https://developers.openai.com/api/docs/changelog)中的发布日期，按现有约定记录为 UTC 零点；单价来自[官方定价](https://developers.openai.com/api/docs/pricing)，单位为美元 / 百万 Token，表内为“普通上下文 → 长上下文”：
 
@@ -361,19 +365,19 @@ CLI 默认仍在聚合和输出前联网校验，可用 `CODEX_USAGE_PRICING_REF
 缓存更新使用锁文件、同目录临时文件和原子 rename。损坏的运行时缓存会先改名保留为 `.corrupt-<timestamp>`，再回退内置目录；内置目录自身无效时会明确拒绝启动。
 
 ```text
-官方金额 =
+公开单价估算 =
   (普通输入 × input 单价
    + 缓存命中 × cached input 单价
    + 缓存写入 × cache write 单价
    + 输出 × output 单价) / 1,000,000
 
-参考金额基线 = 官方金额 + 假设金额基线
-参考金额上界 = 官方金额 + 假设金额上界
+参考金额基线 = 公开单价估算 + 假设金额基线
+另一方案总额 = 公开单价估算 + 另一方案的假设金额
 ```
 
 这些数字只是事件发生时的 Standard API 等价参考，不是 ChatGPT 订阅账单、Codex credits 或实际扣费；也不包含 Batch、Flex、Fast、Ultrafast、区域加价、税费和账户折扣。
 
-`codex-auto-review` 没有独立公开价格，因此始终不进入 `estimated_cost_usd`。参考路由按时期展示：2026-04-23 起使用 GPT-5.4 Thinking（low reasoning）基线，2026-07-30 起使用较低证据等级的 GPT-5.6 Luna 基线；两段都以 GPT-5.6 Sol 为上界。跨时期查询会在 `assumedModels[].routes` 中分别列出请求、Token 和金额。
+`codex-auto-review` 没有独立公开价格，因此始终不进入 `estimated_cost_usd`。参考路由按时期展示：2026-04-23 起使用 GPT-5.4 Thinking（low reasoning）基线，2026-07-30 起使用较低证据等级的 GPT-5.6 Luna 基线；两段都以 GPT-5.6 Sol 为另一参考方案（保留 `upperBoundModel` 字段名）。跨时期查询会在 `assumedModels[].routes` 中分别列出请求、Token 和金额。
 
 刷新运行时目录，或只检查差异：
 
