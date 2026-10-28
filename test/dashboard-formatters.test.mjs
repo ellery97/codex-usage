@@ -59,3 +59,16 @@ test("ranking chart metrics follow the selected numeric sort", () => {
     label: "Token 总量",
   });
 });
+
+test("chart scales and currency labels preserve fractional-dollar usage", async () => {
+  const { chartScaleMax, formatChartMoney, groupScopeLabel } = await import("../public/dashboard-formatters.js");
+  assert.equal(chartScaleMax([0, 0]), 1);
+  assert.equal(chartScaleMax([0.001, 0.003]), 0.005);
+  assert.ok(Math.abs(chartScaleMax([0.00003]) - 0.00005) < 1e-12);
+  assert.equal(chartScaleMax([1, 14, null, undefined]), 20);
+  assert.equal(formatChartMoney(0), "$0.00");
+  assert.equal(formatChartMoney(0.00003), "$0.00003");
+  assert.equal(formatChartMoney(0.25), "$0.25");
+  assert.equal(formatChartMoney(1024), "$1,024.00");
+  assert.equal(groupScopeLabel(18, 60), "展示 18 / 共 60 个分组");
+});
