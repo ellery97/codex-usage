@@ -279,7 +279,7 @@ button:focus-visible {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(300px, 1.45fr);
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -366,12 +366,25 @@ button:focus-visible {
   font-weight: 500;
 }
 
-.cost-breakdown span[hidden] {
+.cost-breakdown [hidden] {
   display: none;
 }
 
 .cost-breakdown i {
   font-style: normal;
+}
+
+.cost-breakdown small {
+  font-size: 10px;
+}
+
+.cost-subset {
+  margin: 0 0 5px;
+  padding-left: 9px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .cost-breakdown b {
@@ -398,6 +411,50 @@ button:focus-visible {
 
 .pricing-warning[hidden] {
   display: none;
+}
+
+.cost-details {
+  margin-bottom: 16px;
+}
+
+.cost-details summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cost-details summary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 5px;
+}
+
+.cost-details-body {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.cost-details h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.cost-details-body p {
+  margin: 10px 0;
+}
+
+.cost-equation {
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cost-details .assumed-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .accent-blue {
@@ -710,6 +767,25 @@ canvas {
   white-space: nowrap;
 }
 
+.assumption-models strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.cost-details .model-price-route,
+.cost-details .model-price-estimate {
+  flex-wrap: wrap;
+}
+
+.cost-details .model-price-route b,
+.cost-details .assumption-models b,
+.cost-details .model-price-estimate em {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-align: left;
+}
+
 .model-price-estimate {
   padding-top: 7px;
   border-top: 1px solid rgba(216, 138, 36, 0.14);
@@ -920,7 +996,8 @@ tbody tr:hover {
   .control-grid,
   .metric-grid,
   .analytics-grid,
-  .lower-grid {
+  .lower-grid,
+  .cost-details .assumed-list {
     grid-template-columns: 1fr;
   }
 
