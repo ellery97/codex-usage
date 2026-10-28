@@ -153,6 +153,17 @@ The equivalent direct command is:
 node --no-warnings --expose-gc ./bin/codex-usage-server.mjs
 ```
 
+The dashboard puts the baseline API reference amount, total tokens, requests, and cache-hit ratio
+first, with the last 7 days selected by default. Quick ranges cover today, 7 days, 30 days, and all
+time; **More ranges** retains 24 hours, 12 weeks, and custom dates. Custom dates require at least one
+bound, and the end cannot precede the start.
+
+- Day/month charts switch between **Token / Reference amount**, updating currency axes, peaks, and tooltips. Amounts use the existing baseline reference total. Token totals, input, and output share one vertical scale. Model, directory, and session rankings still follow the selected sort metric.
+- Summary cards and composition cover the full filtered range. Charts and the table display returned groups with an explicit shown/total count. Set the group limit to `0` for all returned groups; rankings show at most the first 18. Table search only searches loaded groups.
+- The full-width table shows core columns by default. **Full columns** adds cache reads/writes, reasoning output, and published-rate estimates. On narrow screens, scrolling stays inside the table, with sticky headers and group labels.
+- **Estimate details** explains included amounts and assumptions. **Sources and index details** contains source paths, scan diagnostics, and deduplication settings. File-level deduplication, failed reads, and missing prices remain visibly flagged.
+- Chart metrics, table search, column visibility, and disclosure panels only change local presentation; they do not query, scan, or validate prices. Trends support mouse pointing and touch selection. Initial load errors provide a retry action. System fonts avoid external font requests.
+
 The server listens after loading the existing index and local prices, then scans logs in the background.
 It displays the published snapshot immediately, or a building-index empty state if none exists.
 A persistent incomplete-history notice stays visible during scanning; filters remain usable.

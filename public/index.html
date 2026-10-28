@@ -3,44 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Codex Token 用量</title>
+    <title>Codex 用量看板</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar" aria-label="Codex token 用量控制区">
+    <header class="topbar">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" role="img">
-            <path d="M4 7.2 12 3l8 4.2v9.6L12 21l-8-4.2V7.2Z" />
-            <path d="M8 8.8h8M8 12h8M8 15.2h5.2" />
-          </svg>
-        </span>
-        <div>
-          <h1>Codex Token 用量</h1>
-          <p id="sourceLabel">本地会话</p>
-        </div>
+        <span class="brand-mark" aria-hidden="true">C</span>
+        <div><h1>Codex 用量看板</h1><p>本地会话 · API 参考估算</p></div>
       </div>
       <div class="status-strip">
-        <span id="rangeLabel">范围：全部</span>
-        <span id="updatedLabel">更新时间：--</span>
-        <span id="filterStatus" class="filter-status" role="status" aria-live="polite" hidden>
-          正在应用筛选
-        </span>
+        <span id="updatedLabel">索引更新时间：--</span>
+        <span id="filterStatus" class="filter-status" role="status" aria-live="polite" hidden>正在应用筛选</span>
       </div>
     </header>
-
     <main class="shell">
-      <section class="control-grid" aria-label="仪表盘筛选条件">
-        <label>
-          <span>数据源</span>
-          <select id="sourceSelect">
-            <option value="all" selected>全部目录</option>
-            <option value="wsl">WSL / Linux</option>
-            <option value="windows">Windows（含归档）</option>
-          </select>
-        </label>
-        <label>
-          <span>范围</span>
+      <section class="control-grid" aria-label="用量筛选">
+        <div id="rangePresets" class="segmented" role="group" aria-label="常用时间范围">
+          <button type="button" data-range="today" aria-pressed="false">今天</button>
+          <button type="button" data-range="7d" aria-pressed="true">7 天</button>
+          <button type="button" data-range="30d" aria-pressed="false">30 天</button>
+          <button type="button" data-range="all" aria-pressed="false">全部</button>
+        </div>
+        <details id="moreRanges" class="range-more">
+          <summary>更多范围</summary>
+          <div class="range-popover">
+            <label><span>时间范围</span>
           <select id="rangeSelect">
             <option value="all">全部时间</option>
             <option value="today">今天</option>
@@ -50,7 +38,93 @@
             <option value="12w">最近 12 周</option>
             <option value="custom">自定义</option>
           </select>
+
+            </label>
+        <label class="custom-range">
+          <span>开始</span>
+          <input id="fromInput" type="date" />
         </label>
+        <label class="custom-range">
+          <span>结束</span>
+          <input id="toInput" type="date" />
+        </label>
+          </div>
+        </details>
+        <label>
+          <span>数据源</span>
+          <select id="sourceSelect">
+            <option value="all" selected>全部目录</option>
+            <option value="wsl">WSL / Linux</option>
+            <option value="windows">Windows（含归档）</option>
+          </select>
+        </label>
+        <button id="refreshButton" type="button" class="primary-action">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12a9 9 0 0 1-15.4 6.36M3 12A9 9 0 0 1 18.4 5.64" />
+            <path d="M21 5v7h-7M3 19v-7h7" />
+          </svg>
+          <span>刷新索引</span>
+        </button>
+      </section>
+      <div class="scope-line"><span id="rangeLabel">范围：最近 7 天</span><span>汇总覆盖整个筛选范围</span></div>
+      <p id="dedupeWarning" class="notice" hidden>当前按文件去重：不同文件中的重复事件可能重复计入。</p>
+      <section id="loadError" class="notice error-panel" role="alert" hidden>
+        <strong>无法加载用量</strong><p id="loadErrorMessage"></p><button id="loadRetry" type="button">重新加载</button>
+      </section>
+      <section id="indexStatus" class="index-status" aria-label="索引状态" hidden>
+        <p id="indexMessage" role="status" aria-live="polite"></p>
+        <p id="indexProgress"></p>
+        <details id="indexFailures" hidden>
+          <summary>读取失败的文件</summary>
+          <ul id="indexFailureList"></ul>
+        </details>
+        <button id="indexRetry" type="button" hidden>重试失败文件</button>
+      </section>
+
+      <section class="metric-grid" aria-label="用量汇总">
+        <article class="metric-card cost-card">
+          <span>API 参考金额（基线）</span>
+          <strong id="estimatedCost">--</strong>
+          <div class="cost-breakdown" aria-label="金额构成">
+            <span><i>按公开单价估算</i><b id="officialCost">--</b></span>
+            <p id="provisionalCostRow" class="cost-subset" hidden>其中，历史生效日期待确认：<b id="provisionalCost">--</b>（已包含）</p>
+            <span id="assumedCostRow" hidden><i>无独立定价估算（已计入）</i><b id="assumedCost">--</b></span>
+          </div>
+        </article>
+        <article class="metric-card">
+          <span>Token 总量</span><strong id="totalTokens">--</strong>
+          <div class="metric-pair"><span>输入 <b id="inputTokens">--</b></span><span>输出 <b id="outputTokens">--</b></span></div>
+          <small id="reasoningOutput">-- 推理输出</small>
+        </article>
+        <article class="metric-card">
+          <span>请求数</span><strong id="requestCount">--</strong>
+          <small><b id="sessionCount">--</b> 个会话</small>
+          <small id="totalSub">当前筛选范围</small>
+        </article>
+        <article class="metric-card">
+          <span>缓存命中率</span><strong id="cacheRatio">--</strong>
+          <small id="cachedInput">-- 缓存输入</small><small id="uncachedInput">-- 普通输入</small>
+        </article>
+      </section>
+      <p id="pricingWarning" class="notice" hidden></p>
+      <details id="costDetails" class="panel cost-details">
+        <summary><span>查看估算依据</span><small id="costSub">按事件发生时 Standard API 价格估算</small></summary>
+        <div class="cost-details-body">
+          <p>基线总额 = 按公开单价估算 + 无独立定价部分的参考估算。</p>
+          <p id="costEquation" class="cost-equation">--</p>
+          <p>按事件发生时的 Standard API 文本 Token 单价换算；这些金额用于参考，不代表 ChatGPT 订阅账单、Codex credits 或实际扣费。未计价 Token 不包含在金额中。</p>
+          <p id="provisionalExplanation" hidden></p>
+          <div id="assumedBlock" class="model-price-block" hidden>
+            <h3>无独立定价部分的估算方案</h3>
+            <p>以下按其他模型的公开单价估算。基线方案已计入上方总额；另一方案仅供比较，两者不叠加，也不代表实际费用的上下限。</p>
+            <p id="alternativeCost" class="cost-equation"></p>
+            <div id="assumedModelList" class="model-price-list assumed-list"></div>
+          </div>
+        </div>
+      </details>
+
+      <section class="analysis-controls" aria-label="分组与展示">
+        <strong>分组与展示</strong>
         <label>
           <span>分组</span>
           <select id="groupSelect">
@@ -84,9 +158,59 @@
           </select>
         </label>
         <label>
-          <span>行数</span>
-          <input id="limitInput" type="number" min="0" max="500" value="60" />
+          <span>分组上限</span>
+          <input id="limitInput" title="0 表示全部分组" type="number" min="0" max="500" value="60" />
         </label>
+      </section>
+      <section class="analytics-grid" aria-label="用量图表">
+        <article class="panel trend-panel">
+          <div class="panel-heading">
+            <div><h2 id="mainChartTitle">Token 用量趋势</h2><p id="mainChartMeta">--</p></div>
+            <div id="chartMetric" class="segmented" role="group" aria-label="趋势指标">
+              <button id="tokenMetric" type="button" aria-pressed="true">Token</button>
+              <button id="costMetric" type="button" aria-pressed="false">参考金额</button>
+            </div>
+          </div>
+          <div class="legend" aria-label="图例"></div>
+          <div class="chart-stage">
+            <canvas id="usageChart" height="280" data-chart-height="280" aria-label="用量趋势，精确数据见下方明细表"></canvas>
+            <div id="chartTooltip" class="chart-tooltip" hidden></div>
+          </div>
+          <p id="chartNote" class="chart-note">--</p>
+        </article>
+        <article class="panel composition-panel">
+          <div class="panel-heading"><div><h2>Token 构成</h2><p>整个筛选范围 · 数量与占比</p></div></div>
+          <div class="composition-body">
+            <canvas id="mixChart" height="180" data-chart-height="180" aria-label="Token 构成，数据见图例"></canvas>
+            <div id="mixList" class="mix-list" aria-label="Token 构成明细"></div>
+          </div>
+        </article>
+      </section>
+      <section class="panel table-panel" aria-label="用量明细">
+        <div class="panel-heading table-tools">
+          <div><h2>明细表</h2><p id="tableMeta">--</p></div>
+          <div class="table-actions">
+            <label class="search-box"><span class="sr-only">搜索已加载分组</span><input id="tableSearch" type="search" placeholder="搜索已加载分组" /></label>
+            <label class="column-toggle"><input id="fullColumns" type="checkbox" />完整列</label>
+          </div>
+        </div>
+        <div id="tableWrap" class="table-wrap" tabindex="0" role="region" aria-label="用量明细，可横向滚动">
+          <table>
+            <thead><tr>
+              <th scope="col">分组</th><th scope="col">总量</th><th scope="col">输入</th><th scope="col">输出</th>
+              <th scope="col">参考金额（基线）</th><th scope="col">缓存率</th><th scope="col">请求</th><th scope="col">会话</th>
+              <th scope="col" class="detail-column">缓存命中</th><th scope="col" class="detail-column">缓存写入</th>
+              <th scope="col" class="detail-column">推理</th><th scope="col" class="detail-column">公开单价估算</th>
+            </tr></thead>
+            <tbody id="usageTable"></tbody>
+          </table>
+        </div>
+      </section>
+      <details id="diagnostics" class="panel diagnostics">
+        <summary>数据来源与索引详情</summary>
+        <div class="diagnostics-body">
+          <div><h3>数据来源</h3><p id="sourceLabel">本地会话</p><p id="scanMeta">--</p></div>
+          <div class="scan-grid"><span><small>有用量 / 已发现文件</small><strong id="fileCount">--</strong></span><span><small>全局去重事件</small><strong id="globalDedupe">--</strong></span></div>
         <label>
           <span>去重</span>
           <select id="dedupeSelect">
@@ -94,134 +218,6 @@
             <option value="file">按文件</option>
           </select>
         </label>
-        <label class="custom-range">
-          <span>开始</span>
-          <input id="fromInput" type="date" />
-        </label>
-        <label class="custom-range">
-          <span>结束</span>
-          <input id="toInput" type="date" />
-        </label>
-        <button id="refreshButton" type="button" class="primary-action">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M21 12a9 9 0 0 1-15.4 6.36M3 12A9 9 0 0 1 18.4 5.64" />
-            <path d="M21 5v7h-7M3 19v-7h7" />
-          </svg>
-          <span>刷新索引</span>
-        </button>
-      </section>
-
-      <section id="indexStatus" class="index-status" aria-label="索引状态" hidden>
-        <p id="indexMessage" role="status" aria-live="polite"></p>
-        <p id="indexProgress"></p>
-        <details id="indexFailures" hidden>
-          <summary>读取失败的文件</summary>
-          <ul id="indexFailureList"></ul>
-        </details>
-        <button id="indexRetry" type="button" hidden>重试失败文件</button>
-      </section>
-
-      <section class="metric-grid" aria-label="Token 汇总">
-        <article class="metric-card accent-blue">
-          <span>Token 总量</span>
-          <strong id="totalTokens">--</strong>
-          <small id="totalSub">-- 次请求</small>
-        </article>
-        <article class="metric-card accent-cyan">
-          <span>输入 Token</span>
-          <strong id="inputTokens">--</strong>
-          <small id="cachedInput">-- 缓存</small>
-        </article>
-        <article class="metric-card accent-amber">
-          <span>输出 Token</span>
-          <strong id="outputTokens">--</strong>
-          <small id="reasoningOutput">-- 推理输出</small>
-        </article>
-        <article class="metric-card accent-green">
-          <span>缓存命中率</span>
-          <strong id="cacheRatio">--</strong>
-          <small id="uncachedInput">-- 未缓存输入</small>
-        </article>
-        <article class="metric-card cost-card accent-rose">
-          <span>API 参考金额（基线）</span>
-          <strong id="estimatedCost">--</strong>
-          <div class="cost-breakdown" aria-label="金额构成">
-            <span><i>按公开单价估算</i><b id="officialCost">--</b></span>
-            <p id="provisionalCostRow" class="cost-subset" hidden>其中，历史生效日期待确认：<b id="provisionalCost">--</b>（已包含）</p>
-            <span id="assumedCostRow" hidden><i>无独立定价部分的参考估算<br /><small>已计入基线总额</small></i><b id="assumedCost">--</b></span>
-          </div>
-          <small id="costSub" class="cost-footnote">按事件发生时 Standard API 价格估算</small>
-          <small id="pricingWarning" class="pricing-warning" hidden></small>
-        </article>
-      </section>
-
-      <details id="costDetails" class="panel cost-details">
-        <summary>查看估算依据</summary>
-        <div class="cost-details-body">
-          <p>基线总额 = 按公开单价估算 + 无独立定价部分的参考估算。</p>
-          <p id="costEquation" class="cost-equation">--</p>
-          <p>按事件发生时的 Standard API 文本 Token 单价换算；这些金额用于参考，不代表 ChatGPT 订阅账单、Codex credits 或实际扣费。未计价 Token 不包含在金额中。</p>
-          <p id="provisionalExplanation" hidden></p>
-          <div id="assumedBlock" class="model-price-block" hidden>
-            <h3>无独立定价部分的估算方案</h3>
-            <p>以下按其他模型的公开单价估算。基线方案已计入上方总额；另一方案仅供比较，两者不叠加，也不代表实际费用的上下限。</p>
-            <p id="alternativeCost" class="cost-equation"></p>
-            <div id="assumedModelList" class="model-price-list assumed-list"></div>
-          </div>
-        </div>
-      </details>
-
-      <section class="analytics-grid">
-        <article class="panel wide">
-          <div class="panel-heading">
-            <div>
-              <h2 id="mainChartTitle">Token 用量趋势</h2>
-              <p id="mainChartMeta">--</p>
-            </div>
-            <div class="legend" aria-label="图例">
-              <span><i class="legend-total"></i>总量</span>
-              <span><i class="legend-input"></i>输入</span>
-              <span><i class="legend-output"></i>输出</span>
-            </div>
-          </div>
-          <div class="chart-stage">
-            <canvas id="usageChart" height="340" data-chart-height="340" aria-label="Token 用量趋势图"></canvas>
-            <div id="chartTooltip" class="chart-tooltip" hidden></div>
-          </div>
-        </article>
-
-        <article class="panel">
-          <div class="panel-heading">
-            <div>
-              <h2>Token 构成</h2>
-              <p>输入 / 输出 / 缓存读写</p>
-            </div>
-          </div>
-          <canvas id="mixChart" width="260" height="260" data-chart-height="260" aria-label="Token 构成图"></canvas>
-          <div class="mix-list">
-            <span><i class="swatch input"></i>普通输入</span>
-            <span><i class="swatch cached"></i>缓存命中</span>
-            <span><i class="swatch cache-write"></i>缓存写入</span>
-            <span><i class="swatch output"></i>普通输出</span>
-            <span><i class="swatch reasoning"></i>推理输出</span>
-          </div>
-        </article>
-      </section>
-
-      <section class="lower-grid">
-        <article class="panel">
-          <div class="panel-heading">
-            <div>
-              <h2>索引刷新</h2>
-              <p id="scanMeta">--</p>
-            </div>
-          </div>
-          <div class="scan-grid">
-            <span><small>会话数</small><strong id="sessionCount">--</strong></span>
-            <span><small>请求数</small><strong id="requestCount">--</strong></span>
-            <span><small>文件数</small><strong id="fileCount">--</strong></span>
-            <span><small>全局去重</small><strong id="globalDedupe">--</strong></span>
-          </div>
           <div id="unpricedBlock" class="model-price-block" hidden>
             <div class="mini-heading">
               <strong>未计价模型</strong>
@@ -229,52 +225,13 @@
             </div>
             <div id="unpricedModelList" class="model-price-list unpriced-list"></div>
           </div>
-        </article>
-
-        <article class="panel table-panel">
-          <div class="panel-heading table-tools">
-            <div>
-              <h2>明细表</h2>
-              <p id="tableMeta">--</p>
-            </div>
-            <label class="search-box">
-              <span class="sr-only">搜索分组</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" />
-              </svg>
-              <input id="tableSearch" type="search" placeholder="搜索分组" />
-            </label>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>分组</th>
-                  <th>会话</th>
-                  <th>请求</th>
-                  <th>总量</th>
-                  <th>输入</th>
-                  <th>缓存命中</th>
-                  <th>缓存写入</th>
-                  <th>输出</th>
-                  <th>推理</th>
-                  <th>公开单价估算</th>
-                  <th>参考金额（基线）</th>
-                  <th>缓存率</th>
-                </tr>
-              </thead>
-              <tbody id="usageTable"></tbody>
-            </table>
-          </div>
-        </article>
-      </section>
+        </div>
+      </details>
+      <footer class="page-footer">数据保留在本机 · API 参考金额不代表订阅账单或实际扣费</footer>
     </main>
-
     <div id="loadingOverlay" class="loading-overlay" hidden>
-      <div class="loader" role="status" aria-live="polite">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 3a9 9 0 1 0 9 9" />
-        </svg>
+      <div class="loading-card" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
         <span id="loadingMessage">正在读取本地索引</span>
       </div>
     </div>

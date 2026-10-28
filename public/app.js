@@ -1,4 +1,4 @@
-import { formatRange, rankingMetricForSort } from "./dashboard-formatters.js";
+import { formatRange, rankingMetricForSort, chartScaleMax, formatChartMoney, groupScopeLabel } from "./dashboard-formatters.js";
 
 const state = {
   data: null,
@@ -7,9 +7,24 @@ const state = {
   blockingLoading: false,
   chartPoints: [],
   hoverIndex: null,
+  trendMetric: "tokens",
 };
 
 const els = {
+  rangePresets: document.getElementById("rangePresets"),
+  moreRanges: document.getElementById("moreRanges"),
+  dedupeWarning: document.getElementById("dedupeWarning"),
+  loadError: document.getElementById("loadError"),
+  loadErrorMessage: document.getElementById("loadErrorMessage"),
+  loadRetry: document.getElementById("loadRetry"),
+  chartMetric: document.getElementById("chartMetric"),
+  tokenMetric: document.getElementById("tokenMetric"),
+  costMetric: document.getElementById("costMetric"),
+  chartNote: document.getElementById("chartNote"),
+  mixList: document.getElementById("mixList"),
+  fullColumns: document.getElementById("fullColumns"),
+  tableWrap: document.getElementById("tableWrap"),
+
   indexStatus: document.getElementById("indexStatus"),
   indexMessage: document.getElementById("indexMessage"),
   indexProgress: document.getElementById("indexProgress"),
@@ -82,22 +97,16 @@ let sortUserSelected = false;
 let requestController = null;
 let requestSequence = 0;
 let filterDebounce = null;
-const chartSans =
-  '"Noto Sans SC", "Fira Sans", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", sans-serif';
-const chartMono =
-  '"Fira Code", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "SFMono-Regular", Consolas, "Liberation Mono", monospace';
-const chartColors = {
-  ink: "#1F2937",
-  muted: "#64748B",
-  surface: "#FFFFFF",
-  surface2: "#EDF6F3",
-  blue: "#4F67C8",
-  cyan: "#2F8792",
-  amber: "#D88A24",
-  green: "#268466",
-  rose: "#C04D67",
-  grid: "#D8E5E1",
-};
+const chartSans = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+const chartMono = '"SFMono-Regular", Consolas, "Liberation Mono", monospace';
+// Match the CSS palette; read the shared custom properties in the browser.
+const css = window.getComputedStyle?.(document.documentElement);
+const chartColors = Object.fromEntries(Object.entries({
+  ink: "#17212f", muted: "#5f6b7b", surface: "#ffffff", blue: "#315bd6",
+  cyan: "#477f99", amber: "#b57b24", green: "#26846b", rose: "#9366b4",
+}).map(([key, fallback]) => [key, css?.getPropertyValue(`--${key}`).trim() || fallback]));
+chartColors.grid = css?.getPropertyValue("--line").trim() || "#e1e5eb";
+chartColors.surface2 = css?.getPropertyValue("--soft").trim() || "#eef3ff";
 
 function compactNumber(value) {
   const n = Number(value || 0);
@@ -138,7 +147,7 @@ function setBlockingLoading(value, message = "正在读取本地索引") {
   state.blockingLoading = value;
   els.loadingOverlay.hidden = !value;
   els.loadingMessage.textContent = message;
-  for (const control of els.controlGrid.querySelectorAll("select, input, button")) {
+  for (const control of document.querySelectorAll(".control-grid select, .control-grid input, .control-grid button, .analysis-controls select, .analysis-controls input, #dedupeSelect")) {
     control.disabled = value || (control === els.refreshButton && Boolean(state.indexStatus?.running));
   }
 }
@@ -157,6 +166,12 @@ function showError(message) {
 
 function syncControls() {
   els.controlGrid.classList.toggle("show-custom", els.rangeSelect.value === "custom");
+  for (const button of els.rangePresets.querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.range === els.rangeSelect.value));
+  }
+  els.dedupeWarning.hidden = els.dedupeSelect.value !== "file";
+  els.fromInput.setCustomValidity("");
+  els.toInput.setCustomValidity("");
 }
 
 function defaultSortForGroup(group) {
@@ -198,6 +213,15 @@ function shouldAutoPreferDesc(group, sort, direction) {
 
 async function loadData({ blocking = false } = {}) {
   syncControls();
+  if (els.rangeSelect.value === "custom") {
+    if (!els.fromInput.value && !els.toInput.value) return;
+    if (els.fromInput.value && els.toInput.value && els.fromInput.value > els.toInput.value) {
+      els.toInput.setCustomValidity("结束日期不能早于开始日期");
+      els.toInput.reportValidity();
+      return;
+    }
+  }
+  els.loadError.hidden = true;
   cancelIndexPoll();
   window.clearTimeout(filterDebounce);
   filterDebounce = null;
@@ -233,6 +257,10 @@ async function loadData({ blocking = false } = {}) {
   } catch (error) {
     if (error.name === "AbortError" || requestId !== requestSequence) return;
     showError(error.message);
+    if (!state.data) {
+      els.loadError.hidden = false;
+      els.loadErrorMessage.textContent = error.message;
+    }
   } finally {
     if (requestId === requestSequence) {
       if (blocking) setBlockingLoading(false);
@@ -283,7 +311,7 @@ function updateIndexStatus(status) {
     return item;
   }));
   if (!status.hasSnapshot && state.data) {
-    for (const key of ["totalTokens", "inputTokens", "outputTokens", "cacheRatio", "estimatedCost", "officialCost"] ) text[key].textContent = "--";
+    for (const key of ["totalTokens", "inputTokens", "outputTokens", "cacheRatio", "estimatedCost", "officialCost", "requestCount", "sessionCount"] ) text[key].textContent = "--";
     text.totalSub.textContent = "正在建立索引";
     text.provisionalCostRow.hidden = true;
     text.assumedCostRow.hidden = true;
@@ -370,13 +398,13 @@ function render() {
   const totals = data.totals || {};
   const stats = data.stats || {};
 
-  text.sourceLabel.textContent = formatSource(data.source);
+  text.sourceLabel.textContent = sourceTitle(data.source) || "未发现可访问目录";
   text.sourceLabel.title = sourceTitle(data.source);
   text.rangeLabel.textContent = `范围：${formatRange(data.range, data.timezone)}`;
   text.updatedLabel.textContent = `索引更新时间：${data.index?.publishedAt ? new Date(data.index.publishedAt).toLocaleString("zh-CN", { hour12: false }) : "--"}`;
 
   text.totalTokens.textContent = compactNumber(totals.total_tokens);
-  text.totalSub.textContent = `${fullNumber(totals.requests)} 次请求`;
+  text.totalSub.textContent = "当前筛选范围";
   text.inputTokens.textContent = compactNumber(totals.input_tokens);
   text.cachedInput.textContent = `${compactNumber(totals.cached_input_tokens)} 命中 · ${compactNumber(totals.cache_write_input_tokens)} 写入`;
   text.outputTokens.textContent = compactNumber(totals.output_tokens);
@@ -408,14 +436,7 @@ function render() {
   text.globalDedupe.textContent = fullNumber(stats.globalDuplicateTokenEvents);
   text.scanMeta.textContent = scanSummary(stats);
 
-  const groupLabel = groupName(data.group);
-  const rowScope = dateGroups.has(data.group) && data.sort === "key" && data.desc ? `最新 ${fullNumber(data.rows.length)} 行` : `${fullNumber(data.rows.length)} 行`;
-  text.mainChartTitle.textContent = dateGroups.has(data.group) ? "Token 用量趋势" : `${groupLabel}排行`;
-  text.mainChartMeta.textContent = `${rowScope} · ${dedupeName(data.dedupeScope)}去重`;
-  text.tableMeta.textContent = `${groupLabel} · ${fullNumber(data.rowCount || data.rows.length)} 个分组`;
-
-  renderMainLegend(data.group, data.sort);
-  renderMainChart(data.rows || [], data.group, data.sort);
+  renderChartSection();
   renderMixChart(totals);
   renderAssumedModels(data.assumedModels || []);
   renderUnpricedModels(data.unpricedModels || []);
@@ -447,26 +468,40 @@ function renderPricingWarning(pricing) {
   text.pricingWarning.title = pricing?.warning || "";
 }
 
+function renderChartSection() {
+  const data = state.data;
+  if (!data) return;
+  const dateGroup = dateGroups.has(data.group);
+  const monetary = dateGroup ? state.trendMetric === "cost" : data.sort === "cost";
+  const rows = data.rows || [];
+  const shown = dateGroup ? rows.length : Math.min(rows.length, 18);
+  els.chartMetric.hidden = !dateGroup;
+  els.tokenMetric.setAttribute("aria-pressed", String(state.trendMetric === "tokens"));
+  els.costMetric.setAttribute("aria-pressed", String(state.trendMetric === "cost"));
+  text.mainChartTitle.textContent = dateGroup ? monetary ? "参考金额趋势" : "Token 用量趋势" : `${groupName(data.group)}排行`;
+  text.mainChartMeta.textContent = `${groupName(data.group)} · ${groupScopeLabel(shown, data.rowCount ?? rows.length)}`;
+  els.usageChart.setAttribute("aria-label", `${text.mainChartTitle.textContent}，精确数据见下方明细表`);
+  els.chartNote.textContent = monetary
+    ? "按 Standard API 单价估算的基线金额，不代表实际扣费。"
+    : "仅展示已加载分组；完整筛选范围的总量见上方汇总。";
+  if (monetary && Number(data.totals?.unpriced_total_tokens || 0) > 0) {
+    els.chartNote.textContent += ` ${compactNumber(data.totals.unpriced_total_tokens)} Token 未计价，金额不完整。`;
+  }
+  renderMainLegend(data.group, data.sort);
+  renderMainChart(rows, data.group, data.sort);
+}
+
 function renderMainLegend(group, sort) {
   if (!els.mainLegend) return;
   const rankingMetric = rankingMetricForSort(sort);
   const items = dateGroups.has(group)
-    ? [
+    ? state.trendMetric === "cost" ? [["legend-total", "参考金额（基线） · USD"]] : [
         ["legend-total", "总量"],
         ["legend-input", "输入"],
         ["legend-output", "输出"],
       ]
-    : [[sort === "cost" ? "swatch reasoning" : "legend-total", rankingMetric.label]];
+    : [["legend-total", rankingMetric.label]];
   els.mainLegend.innerHTML = items.map(([className, label]) => `<span><i class="${className}"></i>${label}</span>`).join("");
-}
-
-function formatSource(source) {
-  if (Array.isArray(source)) {
-    if (source.length === 0) return "未发现可访问目录";
-    if (source.length === 1) return source[0];
-    return `${source.length} 个会话目录`;
-  }
-  return source || "未发现可访问目录";
 }
 
 function sourceTitle(source) {
@@ -485,10 +520,6 @@ function groupName(group) {
     session: "按会话",
     none: "总计",
   }[group] || group;
-}
-
-function dedupeName(scope) {
-  return scope === "file" ? "按文件" : "全局";
 }
 
 function scanSummary(stats) {
@@ -594,8 +625,11 @@ function evidenceLabel(value) {
 function renderTable() {
   const needle = els.tableSearch.value.trim().toLowerCase();
   const rows = state.rows.filter((row) => !needle || String(row.key).toLowerCase().includes(needle));
+  const loaded = state.rows.length;
+  text.tableMeta.textContent = `${groupScopeLabel(loaded, state.data?.rowCount ?? loaded)}${needle ? ` · 搜索匹配 ${fullNumber(rows.length)} 个（仅已加载分组）` : ""}`;
+  els.tableWrap.classList.toggle("show-full", els.fullColumns.checked);
   if (!rows.length) {
-    tableBody.innerHTML = '<tr><td colspan="12" class="empty-cell">暂无数据</td></tr>';
+    tableBody.innerHTML = `<tr><td colspan="${els.fullColumns.checked ? 12 : 8}" class="empty-cell">${needle ? "已加载分组中没有匹配结果" : state.data?.index?.hasSnapshot === false ? "正在建立索引，完成后自动展示数据" : "当前筛选范围暂无数据"}</td></tr>`;
     return;
   }
   tableBody.innerHTML = rows
@@ -603,17 +637,17 @@ function renderTable() {
       (row) => `
         <tr>
           <td title="${escapeHtml(row.key)}">${escapeHtml(row.key)}</td>
-          <td>${fullNumber(row.sessions)}</td>
-          <td>${fullNumber(row.requests)}</td>
           <td>${fullNumber(row.total_tokens)}</td>
           <td>${fullNumber(row.input_tokens)}</td>
-          <td>${fullNumber(row.cached_input_tokens)}</td>
-          <td>${fullNumber(row.cache_write_input_tokens)}</td>
           <td>${fullNumber(row.output_tokens)}</td>
-          <td>${fullNumber(row.reasoning_output_tokens)}</td>
-          <td title="${escapeHtml(costTitle(row))}">${money(row.estimated_cost_usd)}</td>
           <td title="${escapeHtml(costTitle(row))}">${money(row.reference_total_cost_usd)}</td>
           <td>${percent(row.cache_hit_ratio)}</td>
+          <td>${fullNumber(row.requests)}</td>
+          <td>${fullNumber(row.sessions)}</td>
+          <td class="detail-column">${fullNumber(row.cached_input_tokens)}</td>
+          <td class="detail-column">${fullNumber(row.cache_write_input_tokens)}</td>
+          <td class="detail-column">${fullNumber(row.reasoning_output_tokens)}</td>
+          <td class="detail-column" title="${escapeHtml(costTitle(row))}">${money(row.estimated_cost_usd)}</td>
         </tr>`,
     )
     .join("");
@@ -645,7 +679,7 @@ function costTitle(row) {
 function setupCanvas(canvas) {
   const ratio = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  const cssWidth = Math.max(280, rect.width || canvas.clientWidth || 600);
+  const cssWidth = Math.max(1, rect.width || canvas.clientWidth || 600);
   const cssHeight = Number(canvas.dataset.chartHeight || 260);
   canvas.style.width = "100%";
   canvas.style.height = `${cssHeight}px`;
@@ -657,6 +691,7 @@ function setupCanvas(canvas) {
 }
 
 function renderMainChart(rows, group, sort = "total") {
+  els.usageChart.dataset.chartHeight = dateGroups.has(group) ? 280 : Math.max(280, Math.min(rows.length, 18) * 22 + 24);
   const { ctx, width, height } = setupCanvas(els.usageChart);
   ctx.clearRect(0, 0, width, height);
   if (!rows.length) {
@@ -681,28 +716,33 @@ function drawTrend(ctx, width, height, rows) {
   const pad = { top: 18, right: 34, bottom: 48, left: 72 };
   const chartW = width - pad.left - pad.right;
   const chartH = height - pad.top - pad.bottom;
-  const max = niceMax(Math.max(...rows.flatMap((row) => [row.total_tokens, row.input_tokens]), 1));
+  const monetary = state.trendMetric === "cost";
+  const field = monetary ? "reference_total_cost_usd" : "total_tokens";
+  const format = monetary ? formatChartMoney : compactNumber;
+  const max = chartScaleMax(rows.flatMap((row) => monetary ? [row[field]] : [row.total_tokens, row.input_tokens, row.output_tokens]));
   const baseline = pad.top + chartH;
-  const totalPoints = makeSeriesPoints(rows, "total_tokens", pad, chartW, chartH, max);
+  const totalPoints = makeSeriesPoints(rows, field, pad, chartW, chartH, max);
   const inputPoints = makeSeriesPoints(rows, "input_tokens", pad, chartW, chartH, max);
   state.chartPoints = totalPoints.map((point, index) => ({ ...point, index, row: rows[index] }));
 
-  drawGrid(ctx, pad, chartW, chartH, max);
+  drawGrid(ctx, pad, chartW, chartH, max, format);
   drawTrendArea(ctx, totalPoints, baseline, height);
-  drawOutputBars(ctx, rows, pad, chartW, chartH);
-  drawSmoothLine(ctx, inputPoints, chartColors.cyan, { width: 2, alpha: 0.74, dash: [6, 6] });
-  drawSmoothLine(ctx, totalPoints, chartColors.blue, { width: 3.2, alpha: 1 });
-  drawPeakMarker(ctx, totalPoints, rows, pad, chartW);
-  drawHoverGuide(ctx, pad, chartH, totalPoints, rows);
+  if (!monetary) {
+    drawOutputBars(ctx, rows, pad, chartW, chartH, max);
+    drawSeriesLine(ctx, inputPoints, chartColors.cyan, { width: 2, alpha: 0.85, dash: [6, 6] });
+  }
+  drawSeriesLine(ctx, totalPoints, chartColors.blue, { width: 3.2, alpha: 1 });
+  drawPeakMarker(ctx, totalPoints, pad, chartW, format);
+  drawHoverGuide(ctx, pad, chartH, totalPoints);
   drawXAxis(ctx, rows, pad, chartW, height);
 }
 
 function drawBars(ctx, width, height, rows, metric = "total_tokens") {
-  const pad = { top: 8, right: 22, bottom: 16, left: 150 };
+  const pad = { top: 8, right: 14, bottom: 16, left: Math.min(150, width * .4) };
   const chartW = width - pad.left - pad.right;
   const rowH = Math.max(16, Math.min(28, (height - pad.top - pad.bottom) / Math.max(rows.length, 1)));
   const isCost = metric.endsWith("_cost_usd");
-  const max = Math.max(...rows.map((row) => Number(row[metric] || 0)), 1);
+  const max = chartScaleMax(rows.map((row) => row[metric]));
   state.chartPoints = [];
   hideChartTooltip();
   ctx.font = `700 12px ${chartMono}`;
@@ -713,16 +753,16 @@ function drawBars(ctx, width, height, rows, metric = "total_tokens") {
     const barX = pad.left;
     const barY = y + 4;
     const barH = Math.max(8, rowH - 9);
-    const label = isCost ? money(value) : compactNumber(value);
+    const label = isCost ? formatChartMoney(value) : compactNumber(value);
     const labelW = ctx.measureText(label).width;
     const labelY = y + rowH * 0.68;
     const fitsInside = barW > labelW + 18;
 
     ctx.fillStyle = chartColors.ink;
-    ctx.fillText(truncate(String(row.key), 20), 0, y + rowH * 0.68);
+    ctx.fillText(truncate(String(row.key), Math.max(6, Math.floor(pad.left / 8) - 1)), 0, y + rowH * 0.68);
     ctx.fillStyle = chartColors.surface2;
     ctx.fillRect(barX, barY, chartW, barH);
-    ctx.fillStyle = isCost ? chartColors.rose : chartColors.blue;
+    ctx.fillStyle = chartColors.blue;
     ctx.fillRect(barX, barY, barW, barH);
 
     if (fitsInside) {
@@ -739,7 +779,7 @@ function drawBars(ctx, width, height, rows, metric = "total_tokens") {
   });
 }
 
-function drawGrid(ctx, pad, chartW, chartH, max) {
+function drawGrid(ctx, pad, chartW, chartH, max, format) {
   ctx.strokeStyle = chartColors.grid;
   ctx.fillStyle = chartColors.muted;
   ctx.font = `11px ${chartMono}`;
@@ -751,7 +791,7 @@ function drawGrid(ctx, pad, chartW, chartH, max) {
     ctx.lineTo(pad.left + chartW, y);
     ctx.stroke();
     ctx.textAlign = "right";
-    ctx.fillText(compactNumber(max * (1 - i / 4)), pad.left - 12, y + 4);
+    ctx.fillText(format(max * (1 - i / 4)), pad.left - 12, y + 4);
   }
   ctx.textAlign = "left";
 }
@@ -764,23 +804,13 @@ function makeSeriesPoints(rows, field, pad, chartW, chartH, max) {
   });
 }
 
-function niceMax(value) {
-  if (value <= 0) return 1;
-  const exponent = Math.floor(Math.log10(value));
-  const base = 10 ** exponent;
-  const fraction = value / base;
-  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-  return niceFraction * base;
-}
-
 function drawTrendArea(ctx, points, baseline, height) {
   if (!points.length) return;
   const gradient = ctx.createLinearGradient(0, 0, 0, height);
-  gradient.addColorStop(0, "rgba(79, 103, 200, 0.20)");
-  gradient.addColorStop(0.55, "rgba(47, 135, 146, 0.08)");
-  gradient.addColorStop(1, "rgba(79, 103, 200, 0)");
+  gradient.addColorStop(0, `${chartColors.blue}18`);
+  gradient.addColorStop(1, `${chartColors.blue}00`);
   ctx.beginPath();
-  traceSmoothPath(ctx, points);
+  traceLinePath(ctx, points);
   ctx.lineTo(points.at(-1).x, baseline);
   ctx.lineTo(points[0].x, baseline);
   ctx.closePath();
@@ -788,11 +818,11 @@ function drawTrendArea(ctx, points, baseline, height) {
   ctx.fill();
 }
 
-function drawSmoothLine(ctx, points, color, options = {}) {
+function drawSeriesLine(ctx, points, color, options = {}) {
   if (!points.length) return;
   ctx.save();
   ctx.beginPath();
-  traceSmoothPath(ctx, points);
+  traceLinePath(ctx, points);
   ctx.lineWidth = options.width || 2;
   ctx.strokeStyle = color;
   ctx.globalAlpha = options.alpha ?? 1;
@@ -803,43 +833,26 @@ function drawSmoothLine(ctx, points, color, options = {}) {
   ctx.restore();
 }
 
-function traceSmoothPath(ctx, points) {
+function traceLinePath(ctx, points) {
   if (points.length === 1) {
     ctx.arc(points[0].x, points[0].y, 2.5, 0, Math.PI * 2);
     return;
   }
   ctx.moveTo(points[0].x, points[0].y);
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const midX = (points[index].x + points[index + 1].x) / 2;
-    const midY = (points[index].y + points[index + 1].y) / 2;
-    ctx.quadraticCurveTo(points[index].x, points[index].y, midX, midY);
-  }
-  const last = points.at(-1);
-  ctx.lineTo(last.x, last.y);
+  for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
 }
 
-function drawOutputBars(ctx, rows, pad, chartW, chartH) {
-  const maxOutput = Math.max(...rows.map((row) => Number(row.output_tokens || 0)), 1);
+function drawOutputBars(ctx, rows, pad, chartW, chartH, max) {
   const baseline = pad.top + chartH;
-  const bandHeight = Math.min(58, chartH * 0.18);
   const barWidth = Math.max(2, Math.min(10, chartW / Math.max(rows.length, 1) * 0.38));
   ctx.save();
-  ctx.strokeStyle = "rgba(216, 138, 36, 0.25)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(pad.left, baseline - bandHeight);
-  ctx.lineTo(pad.left + chartW, baseline - bandHeight);
-  ctx.stroke();
+  ctx.fillStyle = chartColors.amber;
+  ctx.globalAlpha = .65;
   rows.forEach((row, index) => {
     const x = pad.left + (rows.length === 1 ? chartW / 2 : (index / (rows.length - 1)) * chartW);
-    const h = (Number(row.output_tokens || 0) / maxOutput) * bandHeight;
-    ctx.fillStyle = "rgba(216, 138, 36, 0.56)";
+    const h = (Number(row.output_tokens || 0) / max) * chartH;
     ctx.fillRect(x - barWidth / 2, baseline - h, barWidth, h);
   });
-  ctx.fillStyle = "rgba(100, 116, 139, 0.76)";
-  ctx.font = `11px ${chartSans}`;
-  ctx.textAlign = "right";
-  ctx.fillText("输出", pad.left - 12, baseline - bandHeight + 4);
   ctx.restore();
 }
 
@@ -876,11 +889,11 @@ function formatAxisLabel(value) {
   return truncate(label, 12);
 }
 
-function drawPeakMarker(ctx, points, rows, pad, chartW) {
+function drawPeakMarker(ctx, points, pad, chartW, format) {
   if (!points.length) return;
   const peakIndex = points.reduce((best, point, index) => (point.value > points[best].value ? index : best), 0);
   const peak = points[peakIndex];
-  const label = `峰值 ${compactNumber(rows[peakIndex].total_tokens)}`;
+  const label = `峰值 ${format(peak.value)}`;
   ctx.save();
   ctx.fillStyle = chartColors.surface;
   ctx.strokeStyle = chartColors.blue;
@@ -902,7 +915,7 @@ function drawPeakMarker(ctx, points, rows, pad, chartW) {
   ctx.restore();
 }
 
-function drawHoverGuide(ctx, pad, chartH, points, rows) {
+function drawHoverGuide(ctx, pad, chartH, points) {
   if (state.hoverIndex == null || !points[state.hoverIndex]) return;
   const point = points[state.hoverIndex];
   ctx.save();
@@ -946,18 +959,24 @@ function clamp(value, min, max) {
 function renderMixChart(totals) {
   const { ctx, width, height } = setupCanvas(els.mixChart);
   ctx.clearRect(0, 0, width, height);
+  if (state.data?.index?.hasSnapshot === false) {
+    els.mixList.innerHTML = "";
+    drawEmpty(ctx, width, height);
+    return;
+  }
   const centerX = width / 2;
   const centerY = height / 2;
-  const radius = Math.min(width, height) * 0.35;
+  const radius = Math.min(width, height) * 0.43;
   const regularOutput = Math.max(0, Number(totals.output_tokens || 0) - Number(totals.reasoning_output_tokens || 0));
   const values = [
-    { value: totals.uncached_input_tokens || 0, color: chartColors.cyan },
-    { value: totals.cached_input_tokens || 0, color: chartColors.green },
-    { value: totals.cache_write_input_tokens || 0, color: chartColors.blue },
-    { value: regularOutput, color: chartColors.amber },
-    { value: totals.reasoning_output_tokens || 0, color: chartColors.rose },
+    { label: "普通输入", className: "input", value: Number(totals.uncached_input_tokens || 0), color: chartColors.cyan },
+    { label: "缓存命中", className: "cached", value: Number(totals.cached_input_tokens || 0), color: chartColors.green },
+    { label: "缓存写入", className: "cache-write", value: Number(totals.cache_write_input_tokens || 0), color: chartColors.blue },
+    { label: "普通输出", className: "output", value: regularOutput, color: chartColors.amber },
+    { label: "推理输出", className: "reasoning", value: Number(totals.reasoning_output_tokens || 0), color: chartColors.rose },
   ];
   const sum = values.reduce((acc, item) => acc + item.value, 0) || 1;
+  els.mixList.innerHTML = values.map((item) => `<div><span><i class="swatch ${item.className}"></i>${item.label}</span><b title="${fullNumber(item.value)} Token">${compactNumber(item.value)}</b><em>${percent(item.value / sum)}</em></div>`).join("");
   let angle = -Math.PI / 2;
   values.forEach((item) => {
     const next = angle + (item.value / sum) * Math.PI * 2;
@@ -970,24 +989,24 @@ function renderMixChart(totals) {
     angle = next;
   });
   ctx.beginPath();
-  ctx.arc(centerX, centerY, radius * 0.58, 0, Math.PI * 2);
+  ctx.arc(centerX, centerY, radius * 0.76, 0, Math.PI * 2);
   ctx.fillStyle = chartColors.surface;
   ctx.fill();
   ctx.textAlign = "center";
   ctx.fillStyle = chartColors.ink;
-  ctx.font = `700 22px ${chartMono}`;
-  ctx.fillText(percent(totals.cache_hit_ratio), centerX, centerY - 2);
+  ctx.font = `600 19px ${chartMono}`;
+  ctx.fillText(compactNumber(totals.total_tokens), centerX, centerY - 2);
   ctx.fillStyle = chartColors.muted;
   ctx.font = `12px ${chartSans}`;
-  ctx.fillText("缓存命中", centerX, centerY + 18);
+  ctx.fillText("总 Token", centerX, centerY + 18);
   ctx.textAlign = "left";
 }
 
-function drawEmpty(ctx, width, height) {
+function drawEmpty(ctx, width, height, message = state.data?.index?.hasSnapshot === false ? "正在建立索引" : "暂无数据") {
   ctx.fillStyle = chartColors.muted;
   ctx.font = `14px ${chartSans}`;
   ctx.textAlign = "center";
-  ctx.fillText("暂无数据", width / 2, height / 2);
+  ctx.fillText(message, width / 2, height / 2);
   ctx.textAlign = "left";
 }
 
@@ -1011,10 +1030,6 @@ function handleChartMove(event) {
       minDistance = distance;
     }
   }
-  if (minDistance > 42) {
-    hideChartTooltip();
-    return;
-  }
 
   if (state.hoverIndex !== nearest.index) {
     state.hoverIndex = nearest.index;
@@ -1025,19 +1040,21 @@ function handleChartMove(event) {
 
 function showChartTooltip(point, rect) {
   const row = point.row;
-  els.chartTooltip.innerHTML = `
-    <strong>${escapeHtml(row.key)}</strong>
-    <span>总量 <em>${fullNumber(row.total_tokens)}</em></span>
-    <span>输入 <em>${fullNumber(row.input_tokens)}</em></span>
-    <span>缓存写入 <em>${fullNumber(row.cache_write_input_tokens)}</em></span>
-    <span>输出 <em>${fullNumber(row.output_tokens)}</em></span>
-    <span>推理 <em>${fullNumber(row.reasoning_output_tokens)}</em></span>
-    <span>参考金额（基线） <em>${money(row.reference_total_cost_usd)}</em></span>
-    <span>公开单价估算 <em>${money(row.estimated_cost_usd)}</em></span>
-    <span>缓存率 <em>${percent(row.cache_hit_ratio)}</em></span>
-  `;
-  els.chartTooltip.style.left = `${clamp(point.x, 104, rect.width - 104)}px`;
-  els.chartTooltip.style.top = `${clamp(point.y, 64, rect.height - 12)}px`;
+  const monetary = state.trendMetric === "cost";
+  const fields = monetary ? [
+    ["参考金额（基线）", formatChartMoney(row.reference_total_cost_usd)],
+    ["按公开单价估算", formatChartMoney(row.estimated_cost_usd)],
+    ["假设估算（已计入）", formatChartMoney(row.assumed_cost_usd)],
+  ] : [
+    ["总量", fullNumber(row.total_tokens)], ["输入", fullNumber(row.input_tokens)],
+    ["输出", fullNumber(row.output_tokens)], ["缓存率", percent(row.cache_hit_ratio)],
+  ];
+  els.chartTooltip.innerHTML = `<strong>${escapeHtml(row.key)}</strong>` +
+    fields.map(([label, value]) => `<span>${label}<em>${value}</em></span>`).join("") +
+    (monetary && Number(row.unpriced_total_tokens || 0) > 0 ? `<p>${fullNumber(row.unpriced_total_tokens)} Token 未计价</p>` : "");
+  const halfWidth = Math.min(120, rect.width / 2);
+  els.chartTooltip.style.left = `${clamp(point.x, halfWidth, rect.width - halfWidth)}px`;
+  els.chartTooltip.style.top = "12px";
   els.chartTooltip.hidden = false;
 }
 
@@ -1067,22 +1084,45 @@ els.toInput.addEventListener("input", () => applyFilters({ debounce: true }));
 els.refreshButton.addEventListener("click", refreshIndex);
 els.indexRetry.addEventListener("click", refreshIndex);
 els.tableSearch.addEventListener("input", renderTable);
-els.usageChart.addEventListener("mousemove", handleChartMove);
-els.usageChart.addEventListener("mouseleave", () => {
+els.usageChart.addEventListener("pointermove", handleChartMove);
+els.usageChart.addEventListener("pointerdown", handleChartMove);
+els.usageChart.addEventListener("pointerleave", (event) => {
+  // Touch pointers leave on release. Keep the selected day's data readable.
+  if (event.pointerType === "touch") return;
   state.hoverIndex = null;
   hideChartTooltip();
   if (state.data) renderMainChart(state.data.rows || [], state.data.group, state.data.sort);
 });
+let resizeFrame = null;
 window.addEventListener("resize", () => {
-  if (state.data) render();
+  if (resizeFrame != null) return;
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = null;
+    if (!state.data) return;
+    state.hoverIndex = null;
+    hideChartTooltip();
+    renderChartSection();
+    renderMixChart(state.data.totals || {});
+  });
 });
+for (const button of els.rangePresets.querySelectorAll("button")) {
+  button.addEventListener("click", () => {
+    els.rangeSelect.value = button.dataset.range;
+    els.moreRanges.open = false;
+    applyFilters();
+  });
+}
+for (const [button, metric] of [[els.tokenMetric, "tokens"], [els.costMetric, "cost"]]) {
+  button.addEventListener("click", () => {
+    state.trendMetric = metric;
+    state.hoverIndex = null;
+    hideChartTooltip();
+    renderChartSection();
+  });
+}
+els.fullColumns.addEventListener("change", renderTable);
+els.loadRetry.addEventListener("click", () => loadData({ blocking: true }));
 
 syncControls();
 syncSortForGroup({ force: true });
 loadData({ blocking: true });
-
-if (document.fonts?.ready) {
-  document.fonts.ready.then(() => {
-    if (state.data) render();
-  });
-}
