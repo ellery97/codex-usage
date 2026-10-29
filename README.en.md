@@ -381,10 +381,12 @@ each cell shows short-context → long-context pricing:
 | `gpt-6-sol` | 2026-09-22 | 2 → 4 | 0.20 → 0.40 | 2.50 → 5 | 10 → 15 |
 | `gpt-6-luna` | 2026-09-22 | 0.10 → 0.20 | 0.01 → 0.02 | 0.125 → 0.25 | 0.50 → 0.75 |
 | `gpt-6.1-sol` | 2026-09-29 | 2 → 4 | 0.10 → 0.20 | 2.50 → 5 | 10 → 15 |
+| `gpt-6.1-terra` | 2026-10-26 | 1 → 2 | 0.05 → 0.10 | 1.25 → 2.50 | 5 → 7.50 |
 
 When a request exceeds 272,000 input tokens (including cached tokens), long-context rates apply to
 all input, cache reads, cache writes, and output for that request. Exactly 272,000 input tokens still
 uses short-context rates. Cache-write estimates use 30-minute rates; 12-hour writes are not modeled.
+The parser accepts cache-write rows such as `Cache write` and `Cache writes`, using 30-minute rates. A provisional cache entry missing only cache-write rates is superseded by an earlier or equally effective formal version only when the page hash, other rates, and long-context threshold match. The old entry remains for audit; different prices or source content are preserved.
 This pricing update reuses the existing SQLite log index and recalculates costs without rebuilding
 the index. Restart any running Web server to load the new prices.
 

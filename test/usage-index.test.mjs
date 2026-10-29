@@ -866,6 +866,7 @@ test("SQLite and direct aggregation agree at GPT-6 launch and long-context bound
     ["gpt-6-sol", "2026-09-22"],
     ["gpt-6-luna", "2026-09-22"],
     ["gpt-6.1-sol", "2026-09-29"],
+    ["gpt-6.1-terra", "2026-10-26"],
   ];
   for (const [model, date] of models) {
     const launch = Date.parse(`${date}T00:00:00Z`);
@@ -896,9 +897,9 @@ test("SQLite and direct aggregation agree at GPT-6 launch and long-context bound
     assert.equal(unchanged.fullRescanFiles, 0);
     assert.equal(unchanged.scannedBytes, 0);
     const cached = usagePayloadFromIndex(index, unchanged, options);
-    assert.equal(direct.totals.priced_requests, 9);
-    assert.equal(direct.totals.unpriced_requests, 3);
-    assert.ok(Math.abs(direct.totals.estimated_cost_usd - 10.3248041) < 1e-12);
+    assert.equal(direct.totals.priced_requests, 12);
+    assert.equal(direct.totals.unpriced_requests, 4);
+    assert.ok(Math.abs(direct.totals.estimated_cost_usd - 12.8328051) < 1e-12);
     assert.deepEqual(cached.totals, direct.totals);
     assert.deepEqual(cached.rows, direct.rows);
     assert.deepEqual(cached.unpricedModels, direct.unpricedModels);

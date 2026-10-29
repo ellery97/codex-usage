@@ -172,6 +172,23 @@ Regional processing adds a 10% premium where available.
   }
 });
 
+test("parses explicit singular and plural cache-write rows without using retention or speed modifiers", () => {
+  for (const label of ["Cache write", "Cache writes", "Cached write", "Cached writes", "Cache-write"]) {
+    const page = modelPage("gpt-6.1-terra", { input: 1, cachedInput: 0.05, output: 5, longContext: true })
+      .replace("| Output |", `| ${label} | $1.25 | 1M tokens |\n| Output |`)
+      .replace(">272K", "more than 272K")
+      .replace("2x input and", "2x input and cache rates and")
+      .replace("### Quick comparison", `Standard cache writes cost $1.25 per million tokens for 30-minute retention and $2.50 for 12-hour retention, before long-context adjustments.
+Fast mode prices are 2x Standard. Batch and Flex prices are 50% lower than Standard.
+
+### Quick comparison`);
+    const parsed = parseModelPricingMarkdown(page, "gpt-6.1-terra");
+    assert.deepEqual([parsed.input, parsed.cachedInput, parsed.cacheWrite, parsed.output], [1, 0.05, 1.25, 5], label);
+    assert.equal(parsed.longContextThresholdTokens, 272_000);
+    assert.deepEqual(parsed.longContext, { input: 2, cachedInput: 0.1, cacheWrite: 2.5, output: 7.5 }, label);
+  }
+});
+
 test("supports Pro pages without a cached-input discount", () => {
   const parsed = parseModelPricingMarkdown(
     modelPage("gpt-5.5-pro", { input: 30, cachedInput: null, output: 180 }),
@@ -527,5 +544,66 @@ test("does not infer cache corrections without matching evidence and rates", () 
       undefined,
       label,
     );
+  }
+});
+
+function missingCacheWriteCache() {
+  const model = "gpt-6.1-terra";
+  const seed = pricingCatalogSnapshot();
+  const formal = seed.models[model].versions[0];
+  const observed = {
+    ...structuredClone(formal),
+    id: `${model}-observed-without-cache-write`,
+    effectiveFrom: "2026-10-27T00:00:00.000Z",
+    observedAt: "2026-10-27T00:00:00.000Z",
+    provisional: true,
+    evidenceLevel: "official-model-page-first-observed",
+  };
+  delete observed.cacheWrite;
+  delete observed.longContext.cacheWrite;
+  const runtime = oneModelCatalog(model);
+  runtime.models[model].versions = [observed];
+  return { seed, runtime, model, formal, observed };
+}
+
+test("formal Terra pricing repairs missing cache writes across runtime-cache round trips", async (t) => {
+  const { seed, runtime, model, formal, observed } = missingCacheWriteCache();
+  const merged = mergePricingCatalogs(seed, runtime);
+  assert.deepEqual(merged.models[model].versions.find(v => v.id === observed.id), { ...observed, supersededBy: formal.id });
+  assert.equal(observed.supersededBy, undefined, "the input history stays untouched");
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-pricing-cache-write-repair-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cachePath = path.join(directory, "pricing-history.json");
+  await writeRuntimePricingCache(cachePath, runtime);
+  await writeRuntimePricingCache(cachePath, merged);
+  const loaded = await readRuntimePricingCache(cachePath);
+  const catalog = new PricingCatalog(mergePricingCatalogs(seed, loaded.snapshot));
+  const cost = catalog.estimateUsageCost(model, {
+    input_tokens: 300_000, cached_input_tokens: 100_000, cache_write_input_tokens: 50_000, output_tokens: 100_000,
+  }, Date.parse("2026-10-28T00:00:00Z"));
+  assert.equal(cost.versionId, formal.id);
+  assert.equal(cost.costUsd, 1.185);
+  assert.equal(catalog.snapshot.models[model].versions.length, 2, "preserve the old observation for audit");
+});
+
+test("cache-write repairs preserve independent prices and require matching source evidence", () => {
+  for (const [label, overrides] of [
+    ["different content", { contentHash: "different-page" }],
+    ["no content evidence", { contentHash: null }],
+    ["different input", { input: 2 }],
+    ["different cache read", { cachedInput: 0.1 }],
+    ["existing cache-write price", { cacheWrite: 1 }],
+    ["different output", { output: 6 }],
+    ["different threshold", { longContextThresholdTokens: 300_000 }],
+    ["different long-context prices", { longContext: { input: 2, cachedInput: 0.1, output: 8 } }],
+    ["existing long-context write price", { longContext: { input: 2, cachedInput: 0.1, cacheWrite: 2, output: 7.5 } }],
+    ["missing long context as well", { longContext: null, longContextThresholdTokens: null }],
+    ["already formal", { provisional: false }],
+    ["before launch", { effectiveFrom: "2026-10-25T00:00:00.000Z" }],
+  ]) {
+    const { seed, runtime, model, observed } = missingCacheWriteCache();
+    Object.assign(observed, overrides);
+    const merged = mergePricingCatalogs(seed, runtime);
+    assert.equal(merged.models[model].versions.find(v => v.id === observed.id).supersededBy, undefined, label);
   }
 });
