@@ -867,6 +867,8 @@ test("SQLite and direct aggregation agree at GPT-6 launch and long-context bound
     ["gpt-6-luna", "2026-09-22"],
     ["gpt-6.1-sol", "2026-09-29"],
     ["gpt-6.1-terra", "2026-10-26"],
+    ["gpt-6.2-astra", "2026-11-17"],
+    ["gpt-6.2-sol", "2026-11-17"],
   ];
   for (const [model, date] of models) {
     const launch = Date.parse(`${date}T00:00:00Z`);
@@ -897,11 +899,18 @@ test("SQLite and direct aggregation agree at GPT-6 launch and long-context bound
     assert.equal(unchanged.fullRescanFiles, 0);
     assert.equal(unchanged.scannedBytes, 0);
     const cached = usagePayloadFromIndex(index, unchanged, options);
-    assert.equal(direct.totals.priced_requests, 12);
-    assert.equal(direct.totals.unpriced_requests, 4);
-    assert.ok(Math.abs(direct.totals.estimated_cost_usd - 12.8328051) < 1e-12);
-    assert.deepEqual(cached.totals, direct.totals);
-    assert.deepEqual(cached.rows, direct.rows);
+    assert.equal(direct.totals.priced_requests, 18);
+    assert.equal(direct.totals.unpriced_requests, 6);
+    assert.ok(Math.abs(direct.totals.estimated_cost_usd - 37.9128151) < 1e-12);
+    // SQLite and the direct scan can sum fractional costs in different orders.
+    const roundedCosts = (row) => Object.fromEntries(
+      Object.entries(row).map(([field, value]) => [
+        field,
+        field.endsWith("_cost_usd") ? value.toFixed(12) : value,
+      ]),
+    );
+    assert.deepEqual(roundedCosts(cached.totals), roundedCosts(direct.totals));
+    assert.deepEqual(cached.rows.map(roundedCosts), direct.rows.map(roundedCosts));
     assert.deepEqual(cached.unpricedModels, direct.unpricedModels);
   } finally {
     closeUsageIndex(index);

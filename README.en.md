@@ -370,11 +370,9 @@ explanation, and each period's reference models and scenario amounts. The altern
 the assumed baseline component; the two scenarios are not additive and do not establish actual billing
 bounds. These display changes preserve existing API fields and calculations, with no index rebuild.
 
-The built-in catalog includes the following GPT-6 / 6.1 history. Effective dates follow the release
-dates in the [official changelog](https://developers.openai.com/api/docs/changelog), recorded at UTC
-midnight under the existing date convention. Rates come from the
-[official pricing page](https://developers.openai.com/api/docs/pricing), in USD per million tokens;
-each cell shows short-context → long-context pricing:
+The built-in catalog records GPT-6 family pricing from midnight UTC on each API release date.
+Rates are in USD per million tokens, shown as short-context → long-context.
+[Official changelog](https://developers.openai.com/api/docs/changelog) · [Official pricing](https://developers.openai.com/api/docs/pricing)
 
 | Model | Effective date | Input | Cache reads | Cache writes (30 minutes) | Output |
 | --- | --- | --- | --- | --- | --- |
@@ -382,6 +380,8 @@ each cell shows short-context → long-context pricing:
 | `gpt-6-luna` | 2026-09-22 | 0.10 → 0.20 | 0.01 → 0.02 | 0.125 → 0.25 | 0.50 → 0.75 |
 | `gpt-6.1-sol` | 2026-09-29 | 2 → 4 | 0.10 → 0.20 | 2.50 → 5 | 10 → 15 |
 | `gpt-6.1-terra` | 2026-10-26 | 1 → 2 | 0.05 → 0.10 | 1.25 → 2.50 | 5 → 7.50 |
+| `gpt-6.2-astra` | 2026-11-17 | 8 → 16 | 0.40 → 0.80 | 10 → 20 | 40 → 60 |
+| `gpt-6.2-sol` | 2026-11-17 | 2 → 4 | 0.10 → 0.20 | 2.50 → 5 | 10 → 15 |
 
 When a request exceeds 272,000 input tokens (including cached tokens), long-context rates apply to
 all input, cache reads, cache writes, and output for that request. Exactly 272,000 input tokens still

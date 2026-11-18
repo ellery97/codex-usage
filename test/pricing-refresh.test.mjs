@@ -172,6 +172,28 @@ Regional processing adds a 10% premium where available.
   }
 });
 
+test("parses GPT-6.2 prose multipliers for the Standard long-context rates", () => {
+  const cases = [
+    ["gpt-6.2-astra", 8, 0.4, 10, 40, { input: 16, cachedInput: 0.8, cacheWrite: 20, output: 60 }],
+    ["gpt-6.2-sol", 2, 0.1, 2.5, 10, { input: 4, cachedInput: 0.2, cacheWrite: 5, output: 15 }],
+  ];
+  for (const [model, input, cachedInput, cacheWrite, output, longContext] of cases) {
+    const page = modelPage(model, { input, cachedInput, output })
+      .replace("| Output |", `| Cache writes | $${cacheWrite} | 1M tokens |\n| Output |`)
+      .replace("### Quick comparison", `- The table uses 30-minute cache writes.
+- Above 272K input tokens, input and cache rates double
+  and output costs 1.5 times its normal rate.
+- Fast processing charges 4x input and 3x output for long requests.
+
+### Quick comparison`);
+    const parsed = parseModelPricingMarkdown(page, model);
+    assert.equal(parsed.serviceTier, "standard");
+    assert.deepEqual([parsed.input, parsed.cachedInput, parsed.cacheWrite, parsed.output], [input, cachedInput, cacheWrite, output]);
+    assert.equal(parsed.longContextThresholdTokens, 272_000);
+    assert.deepEqual(parsed.longContext, longContext, model);
+  }
+});
+
 test("parses explicit singular and plural cache-write rows without using retention or speed modifiers", () => {
   for (const label of ["Cache write", "Cache writes", "Cached write", "Cached writes", "Cache-write"]) {
     const page = modelPage("gpt-6.1-terra", { input: 1, cachedInput: 0.05, output: 5, longContext: true })

@@ -34,6 +34,16 @@ const GPT6_PRICES = [
     rates: [2, 0.1, 2.5, 10], longRates: [4, 0.2, 5, 15],
     costs: [1.378998, 1.379, 2.258004],
   },
+  {
+    model: "gpt-6.2-astra", date: "2026-11-17",
+    rates: [8, 0.4, 10, 40], longRates: [16, 0.8, 20, 60],
+    costs: [5.515992, 5.516, 9.032016],
+  },
+  {
+    model: "gpt-6.2-sol", date: "2026-11-17",
+    rates: [2, 0.1, 2.5, 10], longRates: [4, 0.2, 5, 15],
+    costs: [1.378998, 1.379, 2.258004],
+  },
 ];
 
 for (const { model, date, rates, longRates, costs } of GPT6_PRICES) {
@@ -41,7 +51,7 @@ for (const { model, date, rates, longRates, costs } of GPT6_PRICES) {
     const launch = Date.parse(`${date}T00:00:00.000Z`);
     assert.equal(priceForModel(model, launch - 1), null);
     assert.equal(costStatsForUsage(model, { input_tokens: 1 }, launch - 1).unpriced_requests, 1);
-    for (const timestamp of [launch, launch + 1, Date.parse("2026-10-28T00:00:00Z")]) {
+    for (const timestamp of [launch, launch + 1, launch + 24 * 60 * 60 * 1000]) {
       const price = priceForModel(model, timestamp);
       assert.equal(price.versionId, `${model}-${date}`);
       assert.equal(price.provisional, false);
@@ -67,10 +77,11 @@ for (const { model, date, rates, longRates, costs } of GPT6_PRICES) {
   });
 }
 
-test("does not invent generic GPT-6 or GPT-6.1 aliases", () => {
-  const now = Date.parse("2026-10-28T00:00:00Z");
+test("does not invent generic GPT-6 family aliases", () => {
+  const now = Date.parse("2026-11-18T00:00:00Z");
   assert.equal(priceForModel("gpt-6", now), null);
   assert.equal(priceForModel("gpt-6.1", now), null);
+  assert.equal(priceForModel("gpt-6.2", now), null);
 });
 
 test("resolves only the official GPT-5.6 alias to Sol", () => {
@@ -207,7 +218,7 @@ test("exposes event-time pricing metadata and compatibility updatedAt", () => {
   assert.equal(metadata.mode, "event-time");
   assert.equal(metadata.refreshStatus, "cached");
   assert.equal(metadata.updatedAt, metadata.checkedAt.slice(0, 10));
-  assert.equal(metadata.latestEffectiveFrom, "2026-10-26T00:00:00.000Z");
+  assert.equal(metadata.latestEffectiveFrom, "2026-11-17T00:00:00.000Z");
   assert.equal(metadata.longContextThresholdTokens, 272_000);
   assert.equal(metadata.assumedModels[0].assumedModel, "gpt-5.6-luna");
   assert.equal(metadata.assumedModels[0].routes.length, 2);
