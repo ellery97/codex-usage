@@ -410,7 +410,17 @@ function readLongContextThreshold(markdown) {
 
 function readLongContextMultipliers(markdown) {
   const thresholdMatch = LONG_CONTEXT_THRESHOLD_PATTERN.exec(markdown);
-  const text = thresholdMatch ? markdown.slice(thresholdMatch.index, thresholdMatch.index + 600) : "";
+  if (!thresholdMatch) return {};
+  const start = thresholdMatch.index + thresholdMatch[0].length;
+  const text = markdown.slice(start, start + 600);
+
+  // The GPT-6.2 pages spell out the Standard adjustment in the threshold sentence.
+  const proseOutputMultiplier = readMultiplier(
+    text,
+    /^\s*,\s*input\s+and\s+cache\s+rates\s+double\s+and\s+output\s+costs\s+(\d+(?:\.\d+)?)\s+times\b/i,
+  );
+  if (proseOutputMultiplier != null) return { input: 2, output: proseOutputMultiplier };
+
   const result = {};
   for (const pattern of [
     /(\d+(?:\.\d+)?)\s*[×x]\s*(?:for\s+)?(input|output)\b/gi,

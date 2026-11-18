@@ -3,8 +3,8 @@
   "currency": "USD",
   "basis": "OpenAI API Standard text-token pricing per 1M tokens",
   "estimateLabel": "Event-time Standard API-equivalent estimate for local Codex token logs",
-  "checkedAt": "2026-10-28T09:47:14.293Z",
-  "updatedAt": "2026-10-28",
+  "checkedAt": "2026-11-18T01:11:35.353Z",
+  "updatedAt": "2026-11-18",
   "sourceUrls": [
     "https://developers.openai.com/api/docs/models/",
     "https://developers.openai.com/api/docs/pricing",
@@ -663,6 +663,58 @@
           "sourceUrl": "https://developers.openai.com/api/docs/changelog",
           "observedAt": "2026-10-28T09:47:14.293Z",
           "contentHash": "cd34faa8904d85961ab5fe270f079b8be45a9c876af6c809b38b2c069f687a7a",
+          "evidenceLevel": "manually-verified-official"
+        }
+      ]
+    },
+    "gpt-6.2-astra": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6.2-astra.md",
+      "versions": [
+        {
+          "input": 8,
+          "cachedInput": 0.4,
+          "cacheWrite": 10,
+          "output": 40,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 16,
+            "output": 60,
+            "cachedInput": 0.8,
+            "cacheWrite": 20
+          },
+          "id": "gpt-6.2-astra-2026-11-17",
+          "effectiveFrom": "2026-11-17T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "sourceUrl": "https://developers.openai.com/api/docs/changelog",
+          "observedAt": "2026-11-18T01:11:34.271Z",
+          "contentHash": "89611cfc6a48262e6e73d2bca8e9aed9c6694b9ae2955a12d16f0d949081d639",
+          "evidenceLevel": "manually-verified-official"
+        }
+      ]
+    },
+    "gpt-6.2-sol": {
+      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6.2-sol.md",
+      "versions": [
+        {
+          "input": 2,
+          "cachedInput": 0.1,
+          "cacheWrite": 2.5,
+          "output": 10,
+          "longContextThresholdTokens": 272000,
+          "longContext": {
+            "input": 4,
+            "output": 15,
+            "cachedInput": 0.2,
+            "cacheWrite": 5
+          },
+          "id": "gpt-6.2-sol-2026-11-17",
+          "effectiveFrom": "2026-11-17T00:00:00.000Z",
+          "provisional": false,
+          "serviceTier": "standard",
+          "sourceUrl": "https://developers.openai.com/api/docs/changelog",
+          "observedAt": "2026-11-18T01:11:35.353Z",
+          "contentHash": "3c1aa626387fc854be2560f16620f0c913f4a2aa97e8208d4239efd3279fe913",
           "evidenceLevel": "manually-verified-official"
         }
       ]
